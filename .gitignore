@@ -1,0 +1,15 @@
+# Laufzeit-Daten (enthalten persönliche Email-Daten)
+queue.json
+corrections.json
+stats.json
+email_processor.log
+
+# Echte Konfiguration (enthält Hotel-Email-Adressen)
+config.json
+
+# Claude Code lokale Einstellungen
+.claude/
+
+# Windows
+Thumbs.db
+desktop.ini

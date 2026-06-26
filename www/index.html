@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Email Processor – Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<style>
+  body { background:#f0f2f5; }
+  .card { border:none; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.07); }
+  .stat-value { font-size:2.2rem; font-weight:700; line-height:1; }
+  .log-box { background:#1a1a2e; color:#a8d8a8; font-family:'Consolas',monospace;
+             font-size:.76rem; height:220px; overflow-y:auto; border-radius:10px; padding:14px; }
+  .log-box::-webkit-scrollbar{width:6px}
+  .log-box::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
+  .status-dot { width:10px;height:10px;border-radius:50%;display:inline-block; }
+  .pulse { animation:pulse 2s infinite; }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .table th { font-size:.8rem;text-transform:uppercase;letter-spacing:.4px;color:#6c757d;font-weight:600; }
+  .table td { font-size:.88rem;vertical-align:middle; }
+  .section-label { font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#6c757d; }
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-primary py-2 mb-4 shadow-sm">
+  <div class="container-fluid px-4">
+    <span class="navbar-brand fw-bold fs-6 mb-0">
+      <i class="bi bi-envelope-check-fill me-2"></i>Email Processor
+    </span>
+    <div>
+      <a href="/" class="btn btn-primary btn-sm border-white border-opacity-50 me-1">
+        <i class="bi bi-speedometer2 me-1"></i>Dashboard
+      </a>
+      <a href="/config.html" class="btn btn-outline-light btn-sm">
+        <i class="bi bi-gear-fill me-1"></i>Konfiguration
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 pb-5">
+
+  <!-- Test-Modus Banner -->
+  <div id="test-banner" class="alert alert-warning d-flex align-items-center py-2 mb-2" style="display:none!important">
+    <i class="bi bi-flask-fill me-2"></i>
+    <strong>Test-Modus aktiv</strong>
+    <span class="ms-2 text-muted small">— alle E-Mails werden verarbeitet (auch interne), keine Aktion ohne Ihre Genehmigung</span>
+    <button class="btn btn-sm btn-outline-dark ms-auto" onclick="toggleTestMode()">Test-Modus deaktivieren</button>
+  </div>
+
+  <!-- Status -->
+  <div id="status-banner" class="alert alert-secondary d-flex align-items-center py-2 mb-4">
+    <span id="status-dot" class="status-dot bg-secondary me-2"></span>
+    <span id="status-text" class="fw-semibold">Lade...</span>
+    <span class="ms-auto d-flex align-items-center gap-3">
+      <span class="text-muted small">Letzter Check: <strong id="last-checked">–</strong></span>
+      <button id="testmode-btn" class="btn btn-sm btn-outline-secondary fw-semibold" onclick="toggleTestMode()" style="min-width:145px">
+        <i class="bi bi-flask me-1"></i>Test-Modus
+      </button>
+      <button id="bot-toggle" class="btn btn-sm fw-semibold" onclick="toggleBot()" style="min-width:130px">
+        <i class="bi bi-play-fill me-1"></i>Bot starten
+      </button>
+    </span>
+  </div>
+
+  <!-- Fehler-Emails -->
+  <div id="errors-section" style="display:none" class="mb-4">
+    <div class="card border-0" style="border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.07);border-left:4px solid #6f42c1 !important">
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center mb-3">
+          <i class="bi bi-exclamation-triangle-fill text-warning fs-5 me-2"></i>
+          <h6 class="fw-bold mb-0">Fehlgeschlagene Aktionen</h6>
+          <span class="badge bg-warning text-dark ms-2" id="errors-count">0</span>
+          <span class="text-muted small ms-2">— diese Emails konnten nicht verarbeitet werden</span>
+        </div>
+        <div id="errors-items"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Offene Aufgaben (Kollegenemails) -->
+  <div id="tasks-section" style="display:none" class="mb-4">
+    <div class="card border-0" style="border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.07);border-left:4px solid #dc3545 !important">
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center mb-3">
+          <i class="bi bi-flag-fill text-danger fs-5 me-2"></i>
+          <h6 class="fw-bold mb-0">Offene Aufgaben</h6>
+          <span class="badge bg-danger ms-2" id="tasks-count">0</span>
+          <span class="text-muted small ms-2">— Kollegenemails, rot markiert in Outlook · selbst bearbeiten &amp; in "Erledigt" verschieben</span>
+        </div>
+        <div id="tasks-items"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Genehmigungsqueue -->
+  <div id="queue-section" style="display:none" class="mb-4">
+    <div class="card border-0" style="border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.07);border-left:4px solid #fd7e14 !important">
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center mb-3">
+          <i class="bi bi-hourglass-split text-warning fs-5 me-2"></i>
+          <h6 class="fw-bold mb-0">Prüfung erforderlich</h6>
+          <span class="badge bg-warning text-dark ms-2" id="queue-count">0</span>
+          <span class="text-muted small ms-2">— bitte jede Aktion prüfen und genehmigen oder ablehnen</span>
+        </div>
+        <div id="queue-items"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Karten -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100">
+        <div class="d-flex align-items-start justify-content-between">
+          <div>
+            <div class="stat-value text-primary" id="stat-today">–</div>
+            <div class="text-muted small mt-1">Heute verarbeitet</div>
+          </div>
+          <div class="bg-primary bg-opacity-10 rounded-3 p-2">
+            <i class="bi bi-calendar-check text-primary fs-4"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100">
+        <div class="d-flex align-items-start justify-content-between">
+          <div>
+            <div class="stat-value text-secondary" id="stat-total">–</div>
+            <div class="text-muted small mt-1">Gesamt verarbeitet</div>
+          </div>
+          <div class="bg-secondary bg-opacity-10 rounded-3 p-2">
+            <i class="bi bi-envelope-fill text-secondary fs-4"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100">
+        <div class="d-flex align-items-start justify-content-between">
+          <div>
+            <div class="stat-value text-success" id="stat-booking">–</div>
+            <div class="text-muted small mt-1">Buchungsanfragen</div>
+          </div>
+          <div class="bg-success bg-opacity-10 rounded-3 p-2">
+            <i class="bi bi-building text-success fs-4"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100">
+        <div class="d-flex align-items-start justify-content-between">
+          <div>
+            <div class="stat-value text-info" id="stat-application">–</div>
+            <div class="text-muted small mt-1">Bewerbungen</div>
+          </div>
+          <div class="bg-info bg-opacity-10 rounded-3 p-2">
+            <i class="bi bi-person-lines-fill text-info fs-4"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart + Tabelle -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-4 col-xl-3">
+      <div class="card p-3 h-100">
+        <p class="section-label mb-3"><i class="bi bi-pie-chart-fill me-1"></i>Kategorien</p>
+        <div class="d-flex justify-content-center" style="height:200px">
+          <canvas id="chart"></canvas>
+        </div>
+        <div class="mt-3" id="legend">
+          <div class="d-flex justify-content-between small mb-1"><span><span style="color:#0d6efd">●</span> Newsletter</span><strong id="l-nl">0</strong></div>
+          <div class="d-flex justify-content-between small mb-1"><span><span style="color:#ffc107">●</span> Werbung</span><strong id="l-ad">0</strong></div>
+          <div class="d-flex justify-content-between small mb-1"><span><span style="color:#198754">●</span> Buchung</span><strong id="l-bk">0</strong></div>
+          <div class="d-flex justify-content-between small mb-1"><span><span style="color:#0dcaf0">●</span> Bewerbung</span><strong id="l-ap">0</strong></div>
+          <div class="d-flex justify-content-between small"><span><span style="color:#6c757d">●</span> Unbekannt</span><strong id="l-un">0</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-8 col-xl-9">
+      <div class="card h-100">
+        <div class="px-3 pt-3 pb-2 border-bottom">
+          <p class="section-label mb-0"><i class="bi bi-clock-history me-1"></i>Letzte Aktivität</p>
+        </div>
+        <div style="max-height:350px;overflow-y:auto">
+          <table class="table table-hover mb-0">
+            <thead class="table-light" style="position:sticky;top:0;z-index:1">
+              <tr><th style="width:105px">Zeit</th><th>Betreff</th><th style="width:110px">Kategorie</th><th>Ergebnis</th></tr>
+            </thead>
+            <tbody id="recent-tbody">
+              <tr><td colspan="4" class="text-center text-muted py-5">
+                <i class="bi bi-inbox fs-2 d-block mb-2 opacity-25"></i>Lade Daten...
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lernbeispiele -->
+  <div class="card p-3 mb-3">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <p class="section-label mb-0"><i class="bi bi-mortarboard-fill me-1"></i>Lernbeispiele (Korrekturen)</p>
+      <span class="badge bg-secondary" id="corrections-count">0</span>
+    </div>
+    <div id="corrections-empty" class="text-center text-muted py-3" style="font-size:.85rem">
+      <i class="bi bi-check2-circle fs-3 d-block mb-1 opacity-25"></i>
+      Noch keine Korrekturen — der Bot lernt sobald du eine Email korrigierst.
+    </div>
+    <div style="max-height:220px;overflow-y:auto;display:none" id="corrections-table-wrap">
+      <table class="table table-sm table-hover mb-0" style="font-size:.82rem">
+        <thead class="table-light" style="position:sticky;top:0;z-index:1">
+          <tr><th style="width:100px">Zeit</th><th>Betreff</th><th style="width:105px">War</th><th style="width:105px">Richtig</th></tr>
+        </thead>
+        <tbody id="corrections-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="card p-3">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <p class="section-label mb-0"><i class="bi bi-terminal-fill me-1"></i>Aktivitätslog</p>
+      <button class="btn btn-sm btn-outline-secondary py-0" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i></button>
+    </div>
+    <div class="log-box" id="log-box">Lade...</div>
+  </div>
+
+</div>
+
+<script>
+const COLORS = ['#0d6efd','#ffc107','#198754','#0dcaf0','#6c757d'];
+
+const chart = new Chart(document.getElementById('chart'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Newsletter','Werbung','Buchung','Bewerbung','Unbekannt'],
+    datasets: [{ data: [0,0,0,0,0], backgroundColor: COLORS, borderWidth: 3, borderColor: '#fff', hoverOffset: 6 }]
+  },
+  options: { cutout: '70%', plugins: { legend: { display: false } } }
+});
+
+function badge(cat) {
+  return {
+    newsletter:   '<span class="badge bg-primary">Newsletter</span>',
+    application:  '<span class="badge bg-info text-dark">Bewerbung</span>',
+    advertisement:'<span class="badge bg-warning text-dark">Werbung</span>',
+    booking:      '<span class="badge bg-success">Buchung</span>',
+    sonstiges:    '<span class="badge bg-danger"><i class="bi bi-briefcase-fill me-1"></i>Geschäftspost</span>',
+  }[cat] || '<span class="badge bg-secondary">Unbekannt</span>';
+}
+
+// Speichert Textarea-Text und gewählte Sprache über Queue-Refreshes hinweg
+const replyState = {}; // id -> { text, lang }
+
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderRecent(recent) {
+  const tb = document.getElementById('recent-tbody');
+  if (!recent || !recent.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-5"><i class="bi bi-inbox fs-2 d-block mb-2 opacity-25"></i>Noch keine E-Mails verarbeitet</td></tr>';
+    return;
+  }
+  tb.innerHTML = recent.slice(0,25).map(e => `
+    <tr>
+      <td class="text-muted small">${esc(e.time)}</td>
+      <td class="small text-truncate" style="max-width:200px" title="${esc(e.subject)}">${esc(e.subject)}</td>
+      <td>${badge(e.category)}${e.corrected ? ' <span class="badge bg-warning text-dark ms-1" title="Manuell korrigiert">korrigiert</span>' : ''}</td>
+      <td class="small text-muted">${esc((e.folder||'').replace('EmailProcessor/',''))}</td>
+    </tr>`).join('');
+}
+
+function loadCorrections() {
+  fetch('/api/corrections').then(r => r.json()).then(list => {
+    const count   = document.getElementById('corrections-count');
+    const empty   = document.getElementById('corrections-empty');
+    const wrap    = document.getElementById('corrections-table-wrap');
+    const tbody   = document.getElementById('corrections-tbody');
+    count.textContent = list.length;
+    if (!list || !list.length) {
+      empty.style.display = ''; wrap.style.display = 'none'; return;
+    }
+    empty.style.display = 'none'; wrap.style.display = '';
+    tbody.innerHTML = list.slice(0,20).map(c => `
+      <tr>
+        <td class="text-muted">${esc(c.time||'')}</td>
+        <td class="text-truncate" style="max-width:200px" title="${esc(c.subject)}">${esc(c.subject)}</td>
+        <td>${badge(c.wrong_category)}</td>
+        <td>${badge(c.correct_category)}${c.correct_hotel ? '<span class="text-muted ms-1" style="font-size:.75rem">'+esc(c.correct_hotel)+'</span>' : ''}</td>
+      </tr>`).join('');
+  }).catch(() => {});
+}
+
+function loadLogs() {
+  fetch('/api/logs').then(r=>r.json()).then(lines => {
+    const box = document.getElementById('log-box');
+    box.textContent = Array.isArray(lines) && lines.length ? lines.join('\n') : 'Keine Log-Einträge.';
+    box.scrollTop = box.scrollHeight;
+  }).catch(() => {});
+}
+
+function refresh() {
+  fetch('/api/stats').then(r=>r.json()).then(d => {
+    const c = d.categories || {};
+    const nl = c.newsletter||0, ad = c.advertisement||0, bk = c.booking||0, ap = c.application||0, un = (c.unknown||0)+(c.error||0);
+
+    document.getElementById('stat-today').textContent       = d.today_processed ?? 0;
+    document.getElementById('stat-total').textContent       = d.total_processed ?? 0;
+    document.getElementById('stat-booking').textContent     = bk;
+    document.getElementById('stat-application').textContent = ap;
+    document.getElementById('l-nl').textContent = nl;
+    document.getElementById('l-ad').textContent = ad;
+    document.getElementById('l-bk').textContent = bk;
+    document.getElementById('l-ap').textContent = ap;
+    document.getElementById('l-un').textContent = un;
+    document.getElementById('last-checked').textContent = d.last_checked || '–';
+
+    chart.data.datasets[0].data = [nl, ad, bk, ap, un];
+    chart.update();
+
+    const banner = document.getElementById('status-banner');
+    const dot    = document.getElementById('status-dot');
+    const txt    = document.getElementById('status-text');
+    botRunning = !!d.bot_running;
+    const btn = document.getElementById('bot-toggle');
+    if (d.bot_running) {
+      banner.className = 'alert alert-success d-flex align-items-center py-2 mb-4';
+      dot.className    = 'status-dot bg-success pulse me-2';
+      txt.innerHTML    = 'Bot läuft — prüft E-Mails automatisch'
+        + (d.ollama_ok ? ' &nbsp;<span class="badge bg-success" title="Eigene Ollama-Instanz aktiv">Ollama ✓</span>'
+                       : ' &nbsp;<span class="badge bg-warning text-dark" title="Ollama nicht erreichbar — Bot kann nicht klassifizieren">Ollama ✗</span>');
+      btn.className    = 'btn btn-sm fw-semibold btn-outline-danger';
+      btn.innerHTML    = '<i class="bi bi-stop-fill me-1"></i>Bot stoppen';
+      btn.disabled     = false;
+    } else {
+      banner.className = 'alert alert-warning d-flex align-items-center py-2 mb-4';
+      dot.className    = 'status-dot bg-warning me-2';
+      txt.textContent  = 'Bot nicht aktiv';
+      btn.className    = 'btn btn-sm fw-semibold btn-warning';
+      btn.innerHTML    = '<i class="bi bi-play-fill me-1"></i>Bot starten';
+      btn.disabled     = false;
+    }
+
+    renderRecent(d.recent);
+    updateTestMode(!!d.test_mode);
+  }).catch(() => {});
+  loadLogs();
+  loadCorrections();
+}
+
+function updateTestMode(active) {
+  const banner = document.getElementById('test-banner');
+  const btn    = document.getElementById('testmode-btn');
+  if (active) {
+    banner.style.display = '';
+    btn.className = 'btn btn-sm btn-warning fw-semibold';
+    btn.innerHTML = '<i class="bi bi-flask-fill me-1"></i>Test-Modus AN';
+  } else {
+    banner.style.display = 'none';
+    btn.className = 'btn btn-sm btn-outline-secondary fw-semibold';
+    btn.innerHTML = '<i class="bi bi-flask me-1"></i>Test-Modus';
+  }
+}
+
+function toggleTestMode() {
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    cfg.test_mode = !cfg.test_mode;
+    return fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    });
+  }).then(() => setTimeout(refresh, 500)).catch(() => {});
+}
+
+refresh();
+setInterval(refresh, 30000);
+
+// ── Genehmigungsqueue ─────────────────────────────────────────────
+const CAT_ICONS = {
+  newsletter:   'bi-newspaper',
+  application:  'bi-person-lines-fill',
+  advertisement:'bi-megaphone-fill',
+  booking:      'bi-building-fill',
+  unknown:      'bi-question-circle-fill'
+};
+
+function renderQueue(items) {
+  const sec   = document.getElementById('queue-section');
+  const box   = document.getElementById('queue-items');
+  const count = document.getElementById('queue-count');
+
+  if (!items || !items.length) { sec.style.display = 'none'; return; }
+
+  sec.style.display = 'block';
+  const pending = items.filter(e => e.status === 'pending').length;
+  count.textContent = pending;
+
+  box.innerHTML = items.map(e => {
+    // ── In Bearbeitung (genehmigt, wartet auf Bot) ──
+    if (e.status === 'approved') {
+      return `
+      <div class="p-3 mb-2 rounded-3 border border-2 border-success bg-success bg-opacity-10" id="q-${esc(e.id)}" style="transition:opacity .4s">
+        <div class="d-flex align-items-center gap-3">
+          <div class="spinner-border spinner-border-sm text-success flex-shrink-0" role="status"></div>
+          <div class="flex-grow-1">
+            <div class="fw-semibold small">${esc(e.subject)}</div>
+            <div class="small text-muted"><i class="bi bi-person me-1"></i>${esc(e.sender_name||e.sender)}</div>
+          </div>
+          <div class="text-success small fw-semibold text-end flex-shrink-0">
+            <i class="bi bi-check-circle-fill me-1"></i>Genehmigt<br>
+            <span class="fw-normal text-muted" style="font-size:.75rem">Bot führt Aktion aus…</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    // ── Ignoriert, wartet auf Bot ──
+    if (e.status === 'ignored') {
+      return `
+      <div class="p-3 mb-2 rounded-3 border border-2 border-secondary bg-secondary bg-opacity-10" id="q-${esc(e.id)}" style="transition:opacity .4s">
+        <div class="d-flex align-items-center gap-3">
+          <div class="spinner-border spinner-border-sm text-secondary flex-shrink-0" role="status"></div>
+          <div class="flex-grow-1">
+            <div class="fw-semibold small">${esc(e.subject)}</div>
+            <div class="small text-muted"><i class="bi bi-person me-1"></i>${esc(e.sender_name||e.sender)}</div>
+          </div>
+          <div class="text-secondary small fw-semibold text-end flex-shrink-0">
+            <i class="bi bi-eye-slash-fill me-1"></i>Ignoriert<br>
+            <span class="fw-normal text-muted" style="font-size:.75rem">Wird in Ignoriert verschoben…</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    // ── Abgelehnt, wartet auf Bot ──
+    if (e.status === 'rejected') {
+      return `
+      <div class="p-3 mb-2 rounded-3 border border-2 border-danger bg-danger bg-opacity-10" id="q-${esc(e.id)}" style="transition:opacity .4s">
+        <div class="d-flex align-items-center gap-3">
+          <div class="spinner-border spinner-border-sm text-danger flex-shrink-0" role="status"></div>
+          <div class="flex-grow-1">
+            <div class="fw-semibold small">${esc(e.subject)}</div>
+            <div class="small text-muted"><i class="bi bi-person me-1"></i>${esc(e.sender_name||e.sender)}</div>
+            ${e.rejection_reason ? '<div class="small text-danger"><i class="bi bi-info-circle me-1"></i>' + esc(e.rejection_reason) + '</div>' : ''}
+          </div>
+          <div class="text-danger small fw-semibold text-end flex-shrink-0">
+            <i class="bi bi-x-circle-fill me-1"></i>Abgelehnt<br>
+            <span class="fw-normal text-muted" style="font-size:.75rem">Wird archiviert…</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    // ── Ausstehend – normale Karte mit Buttons ──
+    const isReply = e.action_type === 'reply';
+    const sonstigesBanner = e.category === 'sonstiges' ? `
+      <div class="alert alert-danger py-1 px-2 mb-2 d-flex align-items-center gap-2" style="font-size:.82rem">
+        <i class="bi bi-briefcase-fill fs-5 text-danger"></i>
+        <div><strong>Wichtige Geschäftskorrespondenz</strong> — diese Email passt in keine Standardkategorie und erfordert deine persönliche Bearbeitung. Nach Genehmigung: rot markiert in <code>EmailProcessor/Sonstiges</code>.</div>
+      </div>` : '';
+    const correctedBanner = e.is_corrected ? `
+      <div class="alert alert-warning py-1 px-2 mb-2 d-flex align-items-center gap-2" style="font-size:.82rem">
+        <i class="bi bi-arrow-repeat fs-5 text-warning"></i>
+        <div><strong>Korrigierte Anfrage</strong> — Bitte prüfe die angepasste Aktion und genehmige oder lehne erneut ab.</div>
+      </div>` : '';
+    const saved = replyState[e.id];
+    const replyText = (saved && saved.text !== undefined) ? saved.text : (e.reply_text || e.reply_draft || '');
+    const activeLang = (saved && saved.lang) ? saved.lang : 'de';
+    const langBtn = (l) => {
+      const active = l === activeLang;
+      return `<button class="btn ${active ? 'btn-secondary' : 'btn-outline-secondary'} btn-sm py-0 px-2" style="font-size:.75rem"
+        onclick="switchLang('${esc(e.id)}','${l}')" id="lang-${l}-${esc(e.id)}">${l==='de'?'🇩🇪 DE':l==='en'?'🇬🇧 EN':'🇪🇸 ES'}</button>`;
+    };
+    const replySection = isReply ? `
+      <div class="mt-2">
+        <div class="d-flex align-items-center justify-content-between mb-1">
+          <div class="small fw-semibold text-muted">
+            <i class="bi bi-pencil-square me-1"></i>Entwurf Rückfrage-Email
+            <span class="fw-normal">(bearbeitbar vor dem Senden)</span>
+          </div>
+          <div class="d-flex gap-1">${langBtn('de')}${langBtn('en')}${langBtn('es')}</div>
+        </div>
+        <textarea id="reply-${esc(e.id)}" class="form-control form-control-sm" rows="6"
+          style="font-size:.82rem;font-family:inherit"
+          oninput="if(!replyState['${esc(e.id)}'])replyState['${esc(e.id)}']={}; replyState['${esc(e.id)}'].text=this.value"
+          >${esc(replyText)}</textarea>
+      </div>` : '';
+    const cardStyle = e.category === 'sonstiges'
+      ? 'border border-2 border-danger bg-danger bg-opacity-10'
+      : e.is_corrected ? 'border border-2 border-warning bg-warning bg-opacity-10' : 'bg-light';
+    return `
+    <div class="p-3 mb-2 rounded-3 ${cardStyle}" id="q-${esc(e.id)}">
+      ${sonstigesBanner}${correctedBanner}
+      <div class="d-flex align-items-start gap-3">
+        <div class="mt-1">${badge(e.category)}</div>
+        <div class="flex-grow-1">
+          <div class="fw-semibold">${esc(e.subject)}</div>
+          <div class="small text-muted mb-1">
+            <i class="bi bi-person me-1"></i>${esc(e.sender_name || e.sender)}
+            <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(e.received)}</span>
+          </div>
+          <div class="small">
+            <i class="bi bi-arrow-right-circle text-${isReply ? 'warning' : 'primary'} me-1"></i>
+            <strong>Aktion:</strong> ${esc(e.proposed_action)}${
+              e.category === 'newsletter' ? (
+                e.unsubscribe_method === 'mailto'  ? ' <span class="badge bg-success ms-1" title="Sendet Abmelde-Email — sehr zuverlässig">✓ zuverlässig</span>' :
+                e.unsubscribe_method === 'http'    ? ' <span class="badge bg-warning text-dark ms-1" title="Klickt Button auf Webseite — meistens erfolgreich">~ automatisch</span>' :
+                                                     ' <span class="badge bg-secondary ms-1" title="Kein Abmelde-Link gefunden — manuell nötig">⚠ manuell</span>'
+              ) : ''
+            }
+          </div>
+          ${replySection}
+        </div>
+        <div class="d-flex flex-column gap-2 flex-shrink-0" id="btn-${esc(e.id)}">
+          <button class="btn btn-success btn-sm px-3" onclick="queueAction('${esc(e.id)}','approve')">
+            <i class="bi bi-check-lg me-1"></i>Genehmigen
+          </button>
+          <button class="btn btn-outline-danger btn-sm px-3" onclick="showRejectForm('${esc(e.id)}')">
+            <i class="bi bi-x-lg me-1"></i>Ablehnen
+          </button>
+          <button class="btn btn-outline-secondary btn-sm px-3" onclick="ignoreEmail('${esc(e.id)}')" title="Email wird in EmailProcessor/Ignoriert verschoben — keine weitere Aktion">
+            <i class="bi bi-eye-slash me-1"></i>Ignorieren
+          </button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+const CATS = [
+  { key: 'newsletter',    label: 'Newsletter',     icon: 'bi-newspaper',         color: 'primary'   },
+  { key: 'advertisement', label: 'Werbung',        icon: 'bi-megaphone-fill',    color: 'warning'   },
+  { key: 'booking',       label: 'Buchung',        icon: 'bi-building-fill',     color: 'success'   },
+  { key: 'application',   label: 'Bewerbung',      icon: 'bi-person-lines-fill', color: 'info'      },
+  { key: 'sonstiges',     label: 'Geschäftspost',  icon: 'bi-briefcase-fill',    color: 'danger'    },
+  { key: 'unknown',       label: 'Unbekannt',      icon: 'bi-question-circle',   color: 'secondary' },
+];
+const selectedCat = {};
+
+function switchLang(id, lang) {
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const tpl = cfg.reply_templates && cfg.reply_templates[lang];
+    if (!tpl) return;
+    // Zustand speichern damit der nächste Re-Render die Auswahl erhält
+    if (!replyState[id]) replyState[id] = {};
+    replyState[id].lang = lang;
+    replyState[id].text = tpl;
+    const ta = document.getElementById('reply-' + id);
+    if (ta) ta.value = tpl;
+    ['de','en','es'].forEach(l => {
+      const btn = document.getElementById('lang-' + l + '-' + id);
+      if (btn) btn.className = (l === lang ? 'btn btn-secondary' : 'btn btn-outline-secondary') + ' btn-sm py-0 px-2';
+      if (btn) btn.style.fontSize = '.75rem';
+    });
+  }).catch(() => {});
+}
+
+function showRejectForm(id) {
+  const btnArea = document.getElementById('btn-' + id);
+  const catBtns = CATS.map(c =>
+    '<button type="button" class="btn btn-outline-' + c.color + ' btn-sm" ' +
+    'id="cat-' + id + '-' + c.key + '" onclick="selectCat(\'' + id + '\',\'' + c.key + '\')">' +
+    '<i class="bi ' + c.icon + ' me-1"></i>' + c.label + '</button>'
+  ).join('');
+  btnArea.innerHTML =
+    '<div class="small fw-semibold text-muted mb-1">Was ist es wirklich?</div>' +
+    '<div class="d-flex flex-wrap gap-1 mb-2">' + catBtns + '</div>' +
+    '<div id="hotel-' + id + '" style="display:none" class="mb-2">' +
+    '<select class="form-select form-select-sm" id="hotelsel-' + id + '">' +
+    '<option value="">Hotel auswählen...</option></select></div>' +
+    '<div class="d-flex gap-1">' +
+    '<button class="btn btn-danger btn-sm flex-grow-1" id="confirm-' + id + '" ' +
+    'onclick="confirmReject(\'' + id + '\')" disabled>' +
+    '<i class="bi bi-x-lg me-1"></i>Ablehnen</button>' +
+    '<button class="btn btn-outline-secondary btn-sm" onclick="loadQueue()">' +
+    '<i class="bi bi-arrow-counterclockwise"></i></button></div>';
+}
+
+function selectCat(id, cat) {
+  selectedCat[id] = cat;
+  CATS.forEach(c => {
+    const btn = document.getElementById('cat-' + id + '-' + c.key);
+    if (!btn) return;
+    if (c.key === cat) {
+      btn.className = 'btn btn-' + c.color + ' btn-sm';
+    } else {
+      btn.className = 'btn btn-outline-' + c.color + ' btn-sm';
+    }
+  });
+  const hotelDiv = document.getElementById('hotel-' + id);
+  if (cat === 'booking') {
+    hotelDiv.style.display = '';
+    const sel = document.getElementById('hotelsel-' + id);
+    if (sel && sel.options.length <= 1) {
+      const noHotel = document.createElement('option');
+      noHotel.value = '__unknown__';
+      noHotel.textContent = '— Kein Hotel angegeben';
+      sel.appendChild(noHotel);
+      fetch('/api/config').then(r => r.json()).then(cfg => {
+        (cfg.hotels || []).forEach(h => {
+          const o = document.createElement('option');
+          o.value = h.name; o.textContent = h.name; sel.appendChild(o);
+        });
+      }).catch(() => {});
+    }
+    document.getElementById('confirm-' + id).disabled = false;
+  } else {
+    hotelDiv.style.display = 'none';
+    document.getElementById('confirm-' + id).disabled = false;
+  }
+}
+
+function confirmReject(id) {
+  const cat = selectedCat[id];
+  if (!cat) return;
+  const hotelSel = document.getElementById('hotelsel-' + id);
+  const hotelVal = (cat === 'booking' && hotelSel) ? hotelSel.value : '';
+  if (cat === 'booking' && !hotelVal) { if (hotelSel) hotelSel.classList.add('is-invalid'); return; }
+  const noHotel = hotelVal === '__unknown__';
+  const hotel = noHotel ? '' : hotelVal;
+  const catLabel = (CATS.find(c => c.key === cat) || {}).label || cat;
+  const hotelPart = cat === 'booking' ? (noHotel ? ' – Kein Hotel angegeben' : ' – ' + hotel) : '';
+  const reason = 'Ist eigentlich: ' + catLabel + hotelPart;
+  queueAction(id, 'reject', reason, cat, hotel);
+}
+
+function queueAction(id, action, rejectionReason, correctCategory, correctHotel) {
+  const row = document.getElementById('q-' + id);
+  const ta  = document.getElementById('reply-' + id);
+  const body = { id };
+  if (ta) body.reply_text = ta.value;
+  delete replyState[id]; // Gespeicherten Zustand löschen nach Aktion
+  if (rejectionReason)  body.rejection_reason  = rejectionReason;
+  if (correctCategory)  body.correct_category  = correctCategory;
+  if (correctHotel)     body.correct_hotel     = correctHotel;
+
+  // Sofortiges visuelles Feedback — Karte in "In Bearbeitung"-Zustand umschalten
+  if (row) {
+    const isApprove = action === 'approve';
+    const color = isApprove ? 'success' : 'danger';
+    const icon  = isApprove ? 'check-circle-fill' : 'x-circle-fill';
+    const label = isApprove ? 'Genehmigt' : 'Abgelehnt';
+    const sub   = isApprove ? 'Bot führt Aktion aus…' : 'Wird archiviert…';
+    const hint  = (!isApprove && rejectionReason)
+      ? '<div class="small text-danger mt-1"><i class="bi bi-info-circle me-1"></i>' + esc(rejectionReason) + '</div>' : '';
+    const subjectEl = row.querySelector('.fw-semibold');
+    const subject = subjectEl ? subjectEl.textContent : '';
+    row.className = 'p-3 mb-2 rounded-3 border border-2 border-' + color + ' bg-' + color + ' bg-opacity-10';
+    row.innerHTML =
+      '<div class="d-flex align-items-center gap-3">' +
+      '<div class="spinner-border spinner-border-sm text-' + color + ' flex-shrink-0" role="status"></div>' +
+      '<div class="flex-grow-1"><div class="fw-semibold small">' + esc(subject) + '</div>' + hint + '</div>' +
+      '<div class="text-' + color + ' small fw-semibold text-end flex-shrink-0">' +
+      '<i class="bi bi-' + icon + ' me-1"></i>' + label + '<br>' +
+      '<span class="fw-normal text-muted" style="font-size:.75rem">' + sub + '</span></div></div>';
+  }
+
+  fetch('/api/queue/' + action, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  .then(r => r.json())
+  .catch(() => { loadQueue(); }); // Bei Fehler: Queue neu laden um echten Zustand zu zeigen
+}
+
+function loadQueue() {
+  // Aktuelle Textarea-Inhalte sichern bevor neu gerendert wird
+  document.querySelectorAll('[id^="reply-"]').forEach(ta => {
+    const id = ta.id.replace('reply-', '');
+    if (!replyState[id]) replyState[id] = {};
+    replyState[id].text = ta.value;
+  });
+  fetch('/api/queue').then(r=>r.json()).then(renderQueue).catch(()=>{});
+}
+
+loadQueue();
+setInterval(loadQueue, 15000);
+
+// ── Offene Aufgaben ────────────────────────────────────────────────
+function renderTasks(items) {
+  const sec   = document.getElementById('tasks-section');
+  const box   = document.getElementById('tasks-items');
+  const count = document.getElementById('tasks-count');
+  const open  = (items || []).filter(t => t.status === 'open_task');
+  if (!open.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  count.textContent = open.length;
+  box.innerHTML = open.map(t => `
+    <div class="p-3 mb-2 rounded-3 bg-danger bg-opacity-10 border border-danger border-opacity-25" id="task-${esc(t.id)}">
+      <div class="d-flex align-items-center gap-3">
+        <i class="bi bi-flag-fill text-danger fs-5 flex-shrink-0"></i>
+        <div class="flex-grow-1">
+          <div class="fw-semibold">${esc(t.subject)}</div>
+          <div class="small text-muted">
+            <i class="bi bi-person me-1"></i>${esc(t.sender_name || t.sender)}
+            <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(t.received)}</span>
+          </div>
+        </div>
+        <button class="btn btn-outline-secondary btn-sm flex-shrink-0" onclick="markTaskDone('${esc(t.id)}', this)">
+          <i class="bi bi-check-lg me-1"></i>Erledigt
+        </button>
+      </div>
+    </div>`).join('');
+}
+
+function markTaskDone(id, btn) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>...'; }
+  fetch('/api/tasks/done', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(() => loadTasks()).catch(() => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Erledigt'; } });
+}
+
+function loadTasks() {
+  fetch('/api/tasks').then(r => r.json()).then(renderTasks).catch(() => {});
+}
+
+loadTasks();
+setInterval(loadTasks, 30000);
+
+// ── Fehler-Emails ──────────────────────────────────────────────────
+function renderErrors(items) {
+  const sec   = document.getElementById('errors-section');
+  const box   = document.getElementById('errors-items');
+  const count = document.getElementById('errors-count');
+  if (!items || !items.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  count.textContent = items.length;
+  box.innerHTML = items.map(e => `
+    <div class="p-3 mb-2 rounded-3 bg-warning bg-opacity-10 border border-warning border-opacity-25" id="err-${esc(e.id)}">
+      <div class="d-flex align-items-center gap-3">
+        <i class="bi bi-x-circle-fill text-danger fs-5 flex-shrink-0"></i>
+        <div class="flex-grow-1">
+          <div class="fw-semibold">${esc(e.subject)}</div>
+          <div class="small text-muted">
+            <i class="bi bi-person me-1"></i>${esc(e.sender_name || e.sender)}
+            <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(e.received)}</span>
+          </div>
+          <div class="small text-danger mt-1"><i class="bi bi-info-circle me-1"></i>Aktion fehlgeschlagen: ${esc(e.proposed_action)}</div>
+        </div>
+        <div class="d-flex flex-column gap-1 flex-shrink-0">
+          <button class="btn btn-warning btn-sm" onclick="retryError('${esc(e.id)}', this)">
+            <i class="bi bi-arrow-clockwise me-1"></i>Erneut versuchen
+          </button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="dismissError('${esc(e.id)}', this)">
+            <i class="bi bi-archive me-1"></i>Wegblenden
+          </button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function retryError(id, btn) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>...'; }
+  fetch('/api/errors/retry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(() => { loadErrors(); loadQueue(); }).catch(() => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Erneut versuchen'; } });
+}
+
+function dismissError(id, btn) {
+  if (btn) { btn.disabled = true; }
+  fetch('/api/errors/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(() => loadErrors()).catch(() => { if (btn) btn.disabled = false; });
+}
+
+function loadErrors() {
+  fetch('/api/errors').then(r => r.json()).then(renderErrors).catch(() => {});
+}
+
+loadErrors();
+setInterval(loadErrors, 30000);
+
+function ignoreEmail(id) {
+  const row = document.getElementById('q-' + id);
+  if (row) {
+    const subjectEl = row.querySelector('.fw-semibold');
+    const subject = subjectEl ? subjectEl.textContent : '';
+    row.className = 'p-3 mb-2 rounded-3 border border-2 border-secondary bg-secondary bg-opacity-10';
+    row.innerHTML =
+      '<div class="d-flex align-items-center gap-3">' +
+      '<div class="spinner-border spinner-border-sm text-secondary flex-shrink-0" role="status"></div>' +
+      '<div class="flex-grow-1"><div class="fw-semibold small">' + esc(subject) + '</div></div>' +
+      '<div class="text-secondary small fw-semibold text-end flex-shrink-0">' +
+      '<i class="bi bi-eye-slash-fill me-1"></i>Ignoriert<br>' +
+      '<span class="fw-normal text-muted" style="font-size:.75rem">Wird in Ignoriert verschoben…</span></div></div>';
+  }
+  fetch('/api/queue/ignore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).catch(() => { loadQueue(); });
+}
+
+let botRunning = false;
+function toggleBot() {
+  const btn = document.getElementById('bot-toggle');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Bitte warten...';
+  const action = botRunning ? 'stop' : 'start';
+  fetch('/api/bot/' + action, { method: 'POST' })
+    .then(r => r.json())
+    .then(() => { setTimeout(refresh, 3000); })
+    .catch(() => { btn.disabled = false; });
+}
+</script>
+</body>
+</html>

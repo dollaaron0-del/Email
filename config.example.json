@@ -1,0 +1,22 @@
+{
+  "hotels": [
+    {
+      "name": "Beispiel Hotel Stadt",
+      "email": "reservierung@beispiel-hotel.de",
+      "keywords": ["stadt", "stadtteil"]
+    }
+  ],
+  "applications_email": "karriere@beispiel.com",
+  "ollama_model": "llama3.2",
+  "check_interval_minutes": 5,
+  "scan_max_age_days": 2,
+  "skip_domains": [
+    "ihre-firma.com"
+  ],
+  "skip_senders": [],
+  "reply_templates": {
+    "de": "Sehr geehrte Damen und Herren,\n\nvielen Dank für Ihre Anfrage.\n\nKönnten Sie mir bitte mitteilen, in welchem Hotel Sie gerne eine Reservierung vornehmen möchten?\n\nIch freue mich auf Ihre Rückmeldung.\n\nMit freundlichen Grüßen\nIhr Name",
+    "en": "Dear Sir or Madam,\n\nThank you for your inquiry.\n\nCould you please let me know at which hotel you would like to make a reservation?\n\nI look forward to your reply.\n\nKind regards,\nYour Name",
+    "es": "Estimados Señores,\n\nMuchas gracias por su consulta.\n\n¿Podría indicarme en qué hotel le gustaría realizar una reserva?\n\nQuedo a la espera de su respuesta.\n\nAtentamente,\nSu Nombre"
+  }
+}

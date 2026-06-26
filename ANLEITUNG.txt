@@ -1,0 +1,106 @@
+============================================================
+  EMAIL-PROCESSOR – EINRICHTUNGSANLEITUNG (Outlook)
+============================================================
+
+VORAUSSETZUNGEN
+---------------
+- Microsoft Outlook ist installiert und eingeloggt (Microsoft 365)
+- Ollama ist installiert und läuft (llama3.2 Modell geladen)
+- Python ist installiert (https://www.python.org/downloads/)
+  → Bei Installation "Add Python to PATH" anhaken!
+
+
+SCHRITT 1: Hotels und E-Mail-Adressen eintragen (config.yaml)
+--------------------------------------------------------------
+Öffne config.yaml (z.B. mit Notepad) und trage ein:
+
+a) Für jedes Hotel:
+   - name: Exakter Hotelname
+   - email: E-Mail-Adresse des Hotels
+   - keywords: Begriffe, die im E-Mail-Text auf dieses Hotel hinweisen
+
+   Beispiel:
+     - name: "Stadthotel München"
+       email: "info@stadthotel-muenchen.de"
+       keywords: ["stadthotel münchen", "münchen", "stadthotel"]
+
+b) Bewerbungs-Weiterleitungsadresse:
+   applications_email: "hr@deine-firma.de"
+
+
+SCHRITT 2: Installation
+------------------------
+Doppelklick auf: install.bat
+→ Installiert alle benötigten Python-Pakete
+
+
+SCHRITT 3: Programm starten
+-----------------------------
+1. Ollama starten (läuft dann im Hintergrund)
+2. Outlook öffnen und eingeloggt lassen
+3. Doppelklick auf: start.bat
+→ Das Programm läuft im Hintergrund und prüft alle 5 Minuten
+  neue E-Mails im Posteingang
+
+
+SCHRITT 4: Autostart einrichten
+---------------------------------
+Damit das Programm automatisch mit Windows startet:
+
+1. Windows-Taste → "Aufgabenplanung" öffnen
+2. Rechts: "Einfache Aufgabe erstellen..."
+3. Name: "Email Processor"
+4. Trigger: "Beim Anmelden"
+5. Aktion: "Programm starten"
+6. Programm/Skript:
+   C:\Users\Werkstudentfibu\email_processor\start.bat
+7. Fertigstellen
+
+Hinweis: Outlook und Ollama müssen beim PC-Start automatisch starten.
+→ Win+R → shell:startup → Verknüpfungen von Outlook und Ollama hineinkopieren
+
+
+OUTLOOK-ORDNER (werden automatisch erstellt)
+---------------------------------------------
+Das Programm erstellt folgende Unterordner im Posteingang:
+
+  EmailProcessor/
+  ├── Abgemeldet          ← Newsletter erfolgreich abgemeldet
+  ├── Newsletter-Manuell  ← Abmeldung manuell nötig
+  ├── Bewerbung           ← Weitergeleitet an HR
+  ├── Werbung             ← Ignorierte Werbemails
+  ├── Buchung/
+  │   ├── Hotel Name 1    ← Weitergeleitet an jeweiliges Hotel
+  │   └── Hotel Name 2
+  ├── Buchung-Unbekannt   ← Hotel nicht erkannt, manuell prüfen
+  ├── Unbekannt           ← Nicht klassifizierbar
+  └── Fehler              ← Verarbeitungsfehler
+
+
+LOGDATEI
+---------
+Alle Aktionen werden protokolliert in:
+  email_processor\email_processor.log
+
+
+HÄUFIGE PROBLEME
+-----------------
+"Ollama connection error" / Verbindung zu Ollama fehlgeschlagen
+  → Ollama starten: Windows-Taste → "Ollama" suchen → öffnen
+  → Oder im Terminal: ollama serve
+
+"Modell nicht gefunden"
+  → Im Terminal prüfen: ollama list
+  → In config.yaml den Modellnamen anpassen (ollama_model)
+
+"Outlook nicht gefunden"
+  → Outlook öffnen, dann start.bat erneut starten
+
+"Hotel nicht erkannt" → E-Mail landet in Buchung-Unbekannt
+  → In config.yaml mehr keywords für das Hotel eintragen
+  → E-Mail manuell an das Hotel weiterleiten
+
+"Abmeldung nicht möglich" → E-Mail landet in Newsletter-Manuell
+  → Newsletter manuell im Postfach abbestellen
+
+============================================================

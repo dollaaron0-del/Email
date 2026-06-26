@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Email Processor – Konfiguration</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<style>
+  body { background:#f0f2f5; }
+  .card { border:none; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.07); }
+  .section-label { font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#6c757d; }
+  .toast-container { position:fixed; bottom:1.5rem; right:1.5rem; z-index:9999; }
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-primary py-2 mb-4 shadow-sm">
+  <div class="container-fluid px-4">
+    <span class="navbar-brand fw-bold fs-6 mb-0">
+      <i class="bi bi-envelope-check-fill me-2"></i>Email Processor
+    </span>
+    <div>
+      <a href="/" class="btn btn-outline-light btn-sm me-1">
+        <i class="bi bi-speedometer2 me-1"></i>Dashboard
+      </a>
+      <a href="/config.html" class="btn btn-primary btn-sm border-white border-opacity-50">
+        <i class="bi bi-gear-fill me-1"></i>Konfiguration
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 pb-5" style="max-width:960px">
+
+  <!-- Hotels -->
+  <div class="card p-4 mb-4">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <div>
+        <p class="section-label mb-0"><i class="bi bi-building me-1"></i>Hotels</p>
+        <h5 class="fw-semibold mb-0 mt-1">Hotel-Verzeichnis</h5>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="addRow()">
+        <i class="bi bi-plus-lg me-1"></i>Hotel hinzufügen
+      </button>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width:28%">Hotelname</th>
+            <th style="width:28%">E-Mail-Adresse</th>
+            <th>Schlüsselwörter <span class="fw-normal text-muted">(kommagetrennt)</span></th>
+            <th style="width:55px"></th>
+          </tr>
+        </thead>
+        <tbody id="hotel-tbody"></tbody>
+      </table>
+    </div>
+    <div id="empty-hint" class="text-center text-muted py-4" style="display:none">
+      <i class="bi bi-building fs-2 d-block mb-2 opacity-25"></i>
+      Noch keine Hotels — klicke auf "Hotel hinzufügen"
+    </div>
+  </div>
+
+  <!-- Rückfrage-Vorlagen -->
+  <div class="card p-4 mb-4">
+    <p class="section-label mb-1"><i class="bi bi-translate me-1"></i>Rückfrage-Vorlagen</p>
+    <h5 class="fw-semibold mb-1">Standardtext bei unbekanntem Hotel</h5>
+    <p class="text-muted small mb-4">
+      Wird gesendet wenn das Hotel einer Buchungsanfrage nicht erkennbar ist.
+      Der Platzhalter <code>{hotels}</code> wird automatisch durch die Hotelliste ersetzt.
+      Die Sprache wird anhand der eingehenden Email automatisch gewählt.
+    </p>
+
+    <ul class="nav nav-tabs mb-3" id="lang-tabs">
+      <li class="nav-item">
+        <button class="nav-link active" onclick="showLang('de',this)">
+          🇩🇪 Deutsch
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" onclick="showLang('en',this)">
+          🇬🇧 Englisch
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" onclick="showLang('es',this)">
+          🇪🇸 Spanisch
+        </button>
+      </li>
+    </ul>
+
+    <div id="tpl-de">
+      <textarea class="form-control" id="tpl-text-de" rows="9" style="font-family:inherit;font-size:.9rem"
+        placeholder="Sehr geehrte Damen und Herren,..."></textarea>
+      <div class="form-text mt-1">Platzhalter: <code>{hotels}</code> = Liste aller Hotels</div>
+    </div>
+    <div id="tpl-en" style="display:none">
+      <textarea class="form-control" id="tpl-text-en" rows="9" style="font-family:inherit;font-size:.9rem"
+        placeholder="Dear Sir or Madam,..."></textarea>
+      <div class="form-text mt-1">Placeholder: <code>{hotels}</code> = list of all hotels</div>
+    </div>
+    <div id="tpl-es" style="display:none">
+      <textarea class="form-control" id="tpl-text-es" rows="9" style="font-family:inherit;font-size:.9rem"
+        placeholder="Estimados Señores,..."></textarea>
+      <div class="form-text mt-1">Marcador: <code>{hotels}</code> = lista de todos los hoteles</div>
+    </div>
+  </div>
+
+  <!-- Nicht verarbeiten -->
+  <div class="card p-4 mb-4">
+    <p class="section-label mb-1"><i class="bi bi-shield-check me-1"></i>Geschäftliche Emails</p>
+    <h5 class="fw-semibold mb-1">Nicht verarbeiten – unberührt lassen</h5>
+    <p class="text-muted small mb-4">
+      Emails von diesen Absendern werden vom Bot <strong>komplett ignoriert</strong> und bleiben <strong>ungelesen im Posteingang</strong>.
+      Emails von Arbeitskollegen (intern über Exchange) werden automatisch übersprungen — auch ohne Eintrag hier.
+    </p>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Domains überspringen</label>
+        <textarea class="form-control font-monospace" id="skip-domains" rows="4"
+          placeholder="beispiel.com&#10;partnerunternehmen.de"
+          style="font-size:.85rem"></textarea>
+        <div class="form-text">Eine Domain pro Zeile — alle Emails von dieser Domain werden ignoriert.</div>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Einzelne Adressen überspringen</label>
+        <textarea class="form-control font-monospace" id="skip-senders" rows="4"
+          placeholder="chef@firma.de&#10;wichtigerkunde@partner.com"
+          style="font-size:.85rem"></textarea>
+        <div class="form-text">Eine E-Mail-Adresse pro Zeile.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Einstellungen -->
+  <div class="card p-4 mb-4">
+    <p class="section-label mb-1"><i class="bi bi-sliders me-1"></i>Einstellungen</p>
+    <h5 class="fw-semibold mb-4">Allgemeine Einstellungen</h5>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Bewerbungen weiterleiten an</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-person-lines-fill"></i></span>
+          <input type="email" class="form-control" id="app-email" placeholder="hr@firma.de">
+        </div>
+        <div class="form-text">Alle Bewerbungen werden an diese Adresse weitergeleitet.</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Ollama-Modell</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-cpu"></i></span>
+          <input type="text" class="form-control" id="ollama-model" placeholder="llama3.2">
+        </div>
+        <div class="form-text">Prüfen mit: <code>ollama list</code></div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Prüfintervall</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-clock"></i></span>
+          <input type="number" class="form-control" id="interval" min="1" max="60" value="5">
+          <span class="input-group-text">Min.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex justify-content-end gap-2">
+    <a href="/" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Abbrechen</a>
+    <button class="btn btn-primary px-4" onclick="save()">
+      <i class="bi bi-floppy-fill me-1"></i>Einstellungen speichern
+    </button>
+  </div>
+
+</div>
+
+<!-- Toast -->
+<div class="toast-container">
+  <div id="toast" class="toast align-items-center border-0" role="alert">
+    <div class="d-flex">
+      <div class="toast-body fw-semibold"><i class="bi bi-check-circle-fill me-2"></i><span id="toast-msg"></span></div>
+      <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function makeRow(name='', email='', keywords='') {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text"  class="form-control form-control-sm h-name"     value="${esc(name)}"     placeholder="Hotel Beispiel Wien"></td>
+    <td><input type="email" class="form-control form-control-sm h-email"    value="${esc(email)}"    placeholder="info@hotel.at"></td>
+    <td><input type="text"  class="form-control form-control-sm h-keywords" value="${esc(keywords)}" placeholder="wien, beispiel, hotel"></td>
+    <td class="text-center">
+      <button class="btn btn-sm btn-outline-danger" onclick="this.closest('tr').remove(); checkEmpty()">
+        <i class="bi bi-trash3"></i>
+      </button>
+    </td>`;
+  return tr;
+}
+
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function checkEmpty() {
+  const rows = document.querySelectorAll('#hotel-tbody tr').length;
+  document.getElementById('empty-hint').style.display = rows ? 'none' : 'block';
+}
+
+function addRow() {
+  document.getElementById('hotel-tbody').appendChild(makeRow());
+  document.getElementById('empty-hint').style.display = 'none';
+}
+
+function toast(msg, type='success') {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-msg').textContent = msg;
+  t.className = `toast align-items-center border-0 text-bg-${type}`;
+  new bootstrap.Toast(t, { delay: 3500 }).show();
+}
+
+function showLang(lang, btn) {
+  ['de','en','es'].forEach(l => {
+    document.getElementById('tpl-' + l).style.display = l === lang ? '' : 'none';
+  });
+  document.querySelectorAll('#lang-tabs .nav-link').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function save() {
+  const rows   = document.querySelectorAll('#hotel-tbody tr');
+  const hotels = [];
+  let ok = true;
+  rows.forEach(row => {
+    const name  = row.querySelector('.h-name').value.trim();
+    const email = row.querySelector('.h-email').value.trim();
+    const kw    = row.querySelector('.h-keywords').value.trim();
+    if (!name || !email) { ok = false; return; }
+    hotels.push({ name, email, keywords: kw ? kw.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean) : [] });
+  });
+  if (!ok) { toast('Bitte alle Felder (Name + E-Mail) ausfüllen.', 'danger'); return; }
+
+  function parseLines(id) {
+    return document.getElementById(id).value.split('\n')
+      .map(s => s.trim().toLowerCase()).filter(Boolean);
+  }
+
+  const data = {
+    hotels,
+    applications_email:    document.getElementById('app-email').value.trim(),
+    ollama_model:          document.getElementById('ollama-model').value.trim() || 'llama3.2',
+    check_interval_minutes: parseInt(document.getElementById('interval').value) || 5,
+    skip_domains:  parseLines('skip-domains'),
+    skip_senders:  parseLines('skip-senders'),
+    reply_templates: {
+      de: document.getElementById('tpl-text-de').value,
+      en: document.getElementById('tpl-text-en').value,
+      es: document.getElementById('tpl-text-es').value
+    }
+  };
+
+  fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data, null, 2)
+  })
+  .then(r => r.text().then(t => ({ ok: r.ok, status: r.status, text: t })))
+  .then(({ ok, status, text }) => {
+    let d = null;
+    try { d = JSON.parse(text); } catch {}
+    if (ok && d && d.success) {
+      toast('Gespeichert! Bot übernimmt Änderungen beim nächsten Check.');
+    } else {
+      const detail = (d && d.error) ? d.error : (text ? text.substring(0, 200) : 'HTTP ' + status);
+      toast('Fehler beim Speichern: ' + detail, 'danger');
+    }
+  })
+  .catch(err => toast('Verbindungsfehler – läuft der Dashboard-Server? (' + (err.message || err) + ')', 'danger'));
+}
+
+// Konfiguration laden
+fetch('/api/config').then(r=>r.json()).then(cfg => {
+  document.getElementById('app-email').value    = cfg.applications_email || '';
+  document.getElementById('ollama-model').value = cfg.ollama_model || 'llama3.2';
+  document.getElementById('interval').value     = cfg.check_interval_minutes || 5;
+
+  const tbody = document.getElementById('hotel-tbody');
+  if (cfg.hotels && cfg.hotels.length) {
+    cfg.hotels.forEach(h => tbody.appendChild(makeRow(h.name, h.email, (h.keywords||[]).join(', '))));
+    checkEmpty();
+  } else {
+    document.getElementById('empty-hint').style.display = 'block';
+  }
+
+  // Skip-Listen befüllen
+  document.getElementById('skip-domains').value = (cfg.skip_domains || []).join('\n');
+  document.getElementById('skip-senders').value = (cfg.skip_senders || []).join('\n');
+
+  // Templates befüllen
+  const t = cfg.reply_templates || {};
+  document.getElementById('tpl-text-de').value = t.de || '';
+  document.getElementById('tpl-text-en').value = t.en || '';
+  document.getElementById('tpl-text-es').value = t.es || '';
+}).catch(() => toast('Config konnte nicht geladen werden.', 'warning'));
+</script>
+</body>
+</html>
