@@ -98,6 +98,32 @@ manuellen Prüfung — erst nach deiner Genehmigung wird sie endgültig archivie
 Zusätzlich bewertet auch Ollama jede E-Mail auf Phishing/Betrugsversuche
 (z.B. CEO-Fraud ohne Anhang/Link) und behandelt Treffer genauso.
 
+Zusätzlich werden folgende Reputationsquellen abgefragt:
+  - Windows Defender: scannt jeden Anhang lokal (kein Internet-Zugriff,
+    kein Setup nötig, läuft automatisch mit)
+  - URLhaus (abuse.ch): kostenloser Abgleich von Links gegen eine Liste
+    bekannter Schadsoftware-/Phishing-URLs (kein API-Key nötig)
+  - VirusTotal: prüft Anhänge (Datei-Hash) und Links gegen 70+ Antiviren-
+    Engines — nur aktiv, wenn im Dashboard unter Konfiguration → Sicherheit
+    ein kostenloser API-Key (registrieren auf virustotal.com) eingetragen wurde
+Diese externen Prüfungen laufen nur bei E-Mails von außerhalb (nicht bei
+internen Kollegenemails), damit keine internen Daten an Drittanbieter
+gehen und das kostenlose API-Kontingent geschont wird.
+
+WICHTIG — was der Filter NICHT abfangen kann:
+Bei der bekannten "Ich bin kein Roboter"-Betrugsmasche (z.B. gefälschte
+Booking.com-Beschwerde-Mail) führt der Link zu einer externen Webseite mit
+gefälschter Verifizierung, die auffordert, "Win+R" oder ein Terminal zu
+öffnen und einen kopierten Befehl einzufügen — dadurch installiert sich die
+Schadsoftware selbst. Dieser Schritt passiert außerhalb der E-Mail (auf der
+fremden Webseite) und kann von keinem E-Mail-Filter technisch verhindert
+werden. Die Erkennungsmaßnahmen oben (insb. URLhaus/VirusTotal-Link-Check
+und die Booking.com/Marken-Erkennung) sollen die auslösende E-Mail schon vor
+dem Klick abfangen. Als zusätzlicher Schutz gilt für alle im Team:
+  → NIEMALS Text von einer Webseite in "Ausführen" (Win+R), PowerShell
+    oder die Eingabeaufforderung einfügen — das verlangt kein echtes
+    CAPTCHA oder keine echte Verifizierung, das ist immer Schadsoftware.
+
 
 LOGDATEI
 ---------

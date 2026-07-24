@@ -135,6 +135,23 @@
     </div>
   </div>
 
+  <!-- Sicherheit -->
+  <div class="card p-4 mb-4">
+    <p class="section-label mb-1"><i class="bi bi-shield-lock-fill me-1"></i>Sicherheit</p>
+    <h5 class="fw-semibold mb-1">Phishing-/Schadsoftware-Erkennung</h5>
+    <p class="text-muted small mb-3">
+      Jede Email wird bereits lokal auf verdächtige Anhänge, Links und Formulierungen geprüft.
+      Mit einem kostenlosen VirusTotal-API-Key werden zusätzlich Anhänge und Links gegen 70+ Antiviren-Engines abgeglichen.
+      Ohne Key laufen weiterhin die lokale Heuristik, der Windows-Defender-Anhang-Scan und der kostenlose URLhaus-Link-Check.
+    </p>
+    <label class="form-label fw-semibold">VirusTotal API-Key <span class="fw-normal text-muted">(optional)</span></label>
+    <div class="input-group">
+      <span class="input-group-text"><i class="bi bi-key-fill"></i></span>
+      <input type="text" class="form-control font-monospace" id="vt-api-key" placeholder="kostenlos erhältlich auf virustotal.com">
+    </div>
+    <div class="form-text">Ohne Key werden nur die lokalen Prüfungen (Heuristik, Defender, URLhaus) durchgeführt.</div>
+  </div>
+
   <!-- Einstellungen -->
   <div class="card p-4 mb-4">
     <p class="section-label mb-1"><i class="bi bi-sliders me-1"></i>Einstellungen</p>
@@ -256,6 +273,7 @@ function save() {
     check_interval_minutes: parseInt(document.getElementById('interval').value) || 5,
     skip_domains:  parseLines('skip-domains'),
     skip_senders:  parseLines('skip-senders'),
+    virustotal_api_key: document.getElementById('vt-api-key').value.trim(),
     reply_templates: {
       de: document.getElementById('tpl-text-de').value,
       en: document.getElementById('tpl-text-en').value,
@@ -299,6 +317,7 @@ fetch('/api/config').then(r=>r.json()).then(cfg => {
   // Skip-Listen befüllen
   document.getElementById('skip-domains').value = (cfg.skip_domains || []).join('\n');
   document.getElementById('skip-senders').value = (cfg.skip_senders || []).join('\n');
+  document.getElementById('vt-api-key').value    = cfg.virustotal_api_key || '';
 
   // Templates befüllen
   const t = cfg.reply_templates || {};

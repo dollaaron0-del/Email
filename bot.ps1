@@ -677,7 +677,7 @@ function Is-SuspiciousSpam {
 # ── Phishing/Schadsoftware-Erkennung ─────────────────────────────────
 $DangerousAttachmentExtensions = @('.exe','.scr','.bat','.cmd','.com','.pif','.vbs','.vbe','.js','.jse','.wsf','.wsh','.ps1','.psm1','.jar','.msi','.hta','.chm','.reg','.lnk','.iso','.img')
 $MacroAttachmentExtensions     = @('.docm','.xlsm','.pptm','.dotm','.xltm','.xlsb')
-$PhishingKeywordPattern = '(?i)(konto.{0,20}(gesperrt|deaktiviert|eingeschränkt)|passwort.{0,20}(ändern|bestätigen|aktualisieren)|verify your (account|identity|password)|dringend(er)?.{0,15}handlungsbedarf|klicken sie (hier|sofort|jetzt)|unusual (login|activity)|verdächtige (anmeldung|aktivität)|zahlung.{0,20}überfällig|rechnung.{0,15}(überfällig|sofort)|IBAN.{0,20}(geändert|aktualisiert|angepasst)|bankdaten.{0,20}(bestätigen|aktualisieren)|suspend(ed)? your account|account.{0,15}(locked|suspended)|bestätigen sie (ihre|jetzt) (daten|identität|zugangsdaten)|innerhalb von 24 stunden|within 24 hours|letzte mahnung|paket.{0,15}(zoll|gebühr).{0,15}(bezahlen|zahlen))'
+$PhishingKeywordPattern = '(?i)(konto.{0,20}(gesperrt|deaktiviert|eingeschränkt)|passwort.{0,20}(ändern|bestätigen|aktualisieren)|verify your (account|identity|password)|dringend(er)?.{0,15}handlungsbedarf|klicken sie (hier|sofort|jetzt)|unusual (login|activity)|verdächtige (anmeldung|aktivität)|zahlung.{0,20}überfällig|rechnung.{0,15}(überfällig|sofort)|IBAN.{0,20}(geändert|aktualisiert|angepasst)|bankdaten.{0,20}(bestätigen|aktualisieren)|suspend(ed)? your account|account.{0,15}(locked|suspended)|bestätigen sie (ihre|jetzt) (daten|identität|zugangsdaten)|innerhalb von 24 stunden|within 24 hours|letzte mahnung|paket.{0,15}(zoll|gebühr).{0,15}(bezahlen|zahlen)|beschwerde.{0,20}(gast|unterkunft|buchung|über ihr)|complaint.{0,15}(against|about).{0,20}(your|the).{0,10}(property|listing|account)|guest.{0,10}complaint|ihr (angebot|inserat|profil).{0,15}(gemeldet|gesperrt)|neue bewertung.{0,15}erhalten|verifizierung.{0,15}fehlgeschlagen|ich bin kein roboter|verify you are human|nicht.?automatisiert.{0,10}best[äa]tigen)'
 
 function Get-AttachmentRisk {
     param($Item)
@@ -741,7 +741,9 @@ function Get-KeywordRisk {
 $KnownBrandDomains = @{
     'paypal'=@('paypal.com'); 'microsoft'=@('microsoft.com'); 'amazon'=@('amazon.de','amazon.com');
     'dhl'=@('dhl.de','dhl.com'); 'apple'=@('apple.com'); 'google'=@('google.com'); 'ebay'=@('ebay.de','ebay.com');
-    'sparkasse'=@('sparkasse.de'); 'volksbank'=@('volksbank.de'); 'postbank'=@('postbank.de'); 'ionos'=@('ionos.de')
+    'sparkasse'=@('sparkasse.de'); 'volksbank'=@('volksbank.de'); 'postbank'=@('postbank.de'); 'ionos'=@('ionos.de');
+    'booking'=@('booking.com'); 'airbnb'=@('airbnb.com','airbnb.de'); 'expedia'=@('expedia.com','expedia.de');
+    'hrs'=@('hrs.com','hrs.de'); 'tripadvisor'=@('tripadvisor.com','tripadvisor.de')
 }
 
 function Get-SpoofRisk {
@@ -762,13 +764,126 @@ function Get-SpoofRisk {
     return $hits
 }
 
-function Test-PhishingRisk {
+function Get-UniqueLinks {
     param($Item)
+    $links = @()
+    try {
+        $html = $Item.HTMLBody
+        if (-not $html) { return $links }
+        $linkMatches = [regex]::Matches($html, '(?is)href="(https?://[^"]+)"')
+        $seen = @{}
+        foreach ($m in $linkMatches) {
+            $href = $m.Groups[1].Value
+            if (-not $seen.ContainsKey($href)) { $seen[$href] = $true; $links += $href }
+        }
+    } catch {}
+    return $links
+}
+
+# ── VirusTotal (Datei-Hash + Link-Reputation, benoetigt kostenlosen API-Key) ──
+function Get-VTFileVerdict {
+    param([string]$Sha256, $Config)
+    if (-not $Config.virustotal_api_key) { return $null }
+    try {
+        $resp = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/files/$Sha256" `
+            -Headers @{ 'x-apikey' = $Config.virustotal_api_key } -TimeoutSec 15 -ErrorAction Stop
+        $stats = $resp.data.attributes.last_analysis_stats
+        if ($stats -and ($stats.malicious -gt 0 -or $stats.suspicious -gt 0)) {
+            return "VirusTotal: Anhang als Schadsoftware eingestuft ($($stats.malicious) Engines melden Malware, $($stats.suspicious) verdaechtig)"
+        }
+    } catch {}
+    return $null
+}
+
+function Get-VTUrlVerdict {
+    param([string]$Url, $Config)
+    if (-not $Config.virustotal_api_key) { return $null }
+    try {
+        $urlId = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Url)).TrimEnd('=').Replace('+','-').Replace('/','_')
+        $resp = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/urls/$urlId" `
+            -Headers @{ 'x-apikey' = $Config.virustotal_api_key } -TimeoutSec 15 -ErrorAction Stop
+        $stats = $resp.data.attributes.last_analysis_stats
+        if ($stats -and ($stats.malicious -gt 0 -or $stats.suspicious -gt 0)) {
+            return "VirusTotal: Link als gefaehrlich eingestuft ($($stats.malicious) Engines melden Malware/Phishing): $Url"
+        }
+    } catch {}
+    return $null
+}
+
+# ── URLhaus (abuse.ch) — kostenlose Link-Reputation ohne API-Key ──
+function Get-URLhausVerdict {
+    param([string]$Url)
+    try {
+        $resp = Invoke-RestMethod -Uri "https://urlhaus-api.abuse.ch/v1/url/" -Method POST `
+            -Body @{ url = $Url } -TimeoutSec 15 -ErrorAction Stop
+        if ($resp.query_status -eq 'ok') {
+            return "URLhaus: Link ist als bekannte Schadsoftware-/Phishing-URL gemeldet ($($resp.threat)): $Url"
+        }
+    } catch {}
+    return $null
+}
+
+# ── Windows Defender — lokaler Anhang-Scan, kein Internet-Call ──
+function Get-DefenderVerdict {
+    param([string]$Path)
+    try {
+        Import-Module Defender -ErrorAction Stop
+        $before = Get-Date
+        Start-MpScan -ScanPath $Path -ScanType CustomScan -ErrorAction Stop
+        Start-Sleep -Milliseconds 800
+        $hit = Get-MpThreatDetection -ErrorAction Stop |
+            Where-Object { $_.InitialDetectionTime -ge $before.AddSeconds(-3) } | Select-Object -First 1
+        if ($hit) { return "Windows Defender: Bedrohung im Anhang erkannt ($($hit.ThreatName))" }
+    } catch {}
+    return $null
+}
+
+function Test-PhishingRisk {
+    param($Item, $Config)
     $reasons = @()
     $reasons += Get-AttachmentRisk $Item
     $reasons += Get-LinkRisk $Item
     $reasons += Get-KeywordRisk $Item
     $reasons += Get-SpoofRisk $Item
+
+    $isInternal = ($Item.SenderEmailType -eq "EX")
+
+    # Anhaenge: lokaler Defender-Scan fuer alle, VirusTotal-Hash-Check nur fuer externe Absender
+    try {
+        foreach ($att in $Item.Attachments) {
+            $tmp = Join-Path $env:TEMP ("epscan_" + [Guid]::NewGuid().ToString("N") + "_" + $att.FileName)
+            try {
+                $att.SaveAsFile($tmp)
+                $defenderHit = Get-DefenderVerdict $tmp
+                if ($defenderHit) { $reasons += $defenderHit }
+                if (-not $isInternal -and $Config.virustotal_api_key) {
+                    $sha = (Get-FileHash -Path $tmp -Algorithm SHA256 -ErrorAction Stop).Hash
+                    $vtHit = Get-VTFileVerdict $sha $Config
+                    if ($vtHit) { $reasons += $vtHit }
+                }
+            } catch {} finally {
+                try { Remove-Item $tmp -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+    } catch {}
+
+    # Links: URLhaus + VirusTotal nur fuer externe Absender pruefen (Datenschutz + API-Kontingent),
+    # maximal 3 pro Email
+    if (-not $isInternal) {
+        try {
+            $links = @(Get-UniqueLinks $Item) | Select-Object -First 3
+            foreach ($url in $links) {
+                $uhHit = Get-URLhausVerdict $url
+                if ($uhHit) { $reasons += $uhHit }
+                if ($Config.virustotal_api_key) {
+                    Start-Sleep -Milliseconds 300
+                    $vtHit = Get-VTUrlVerdict $url $Config
+                    if ($vtHit) { $reasons += $vtHit }
+                }
+            }
+        } catch {}
+    }
+
     return $reasons
 }
 
@@ -842,7 +957,7 @@ function Scan-Inbox {
         }
 
         # Phishing/Schadsoftware-Pruefung: hoechste Prioritaet, vor allen anderen Checks
-        $riskReasons = @(Test-PhishingRisk $mail)
+        $riskReasons = @(Test-PhishingRisk $mail $Config)
         if ($riskReasons.Count -gt 0) {
             Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG: `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
             foreach ($r in $riskReasons) { Write-Log "  -> $r" "WARN" }
