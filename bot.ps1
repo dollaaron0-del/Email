@@ -342,8 +342,10 @@ function Build-QueueEntry {
 
 # ── Verdächtige Email isolieren (Phishing/Schadsoftware) ─────────────
 function Quarantine-Suspicious-Email {
-    param($Item, $Inbox, [string[]]$Reasons, $Config)
+    param($Item, $Inbox, [string[]]$Reasons, $Config, $Outlook)
     try { $Item.Importance = 2; $Item.FlagStatus = 2; $Item.Categories = "Phishing-Verdacht"; $Item.Save() } catch {}
+
+    if ($Outlook) { Report-ToIT $Item $Inbox $Outlook $Reasons "Sicherheitswarnung (hartes Indiz)" $true }
 
     $entry = Build-QueueEntry $Item 'phishing' '' $Config
     $reasonText = if ($Reasons -and $Reasons.Count -gt 0) { $Reasons -join " | " } else { "Verdächtige Merkmale erkannt" }
@@ -354,6 +356,27 @@ function Quarantine-Suspicious-Email {
     $entry.entry_id = $moved.EntryID
     Add-To-Queue $entry
     return $entry
+}
+
+# ── Meldung an die IT: Kopie der Email + Gruende, Original bleibt unveraendert ──
+function Report-ToIT {
+    param($Item, $Inbox, $Outlook, [string[]]$Reasons, [string]$Level, [bool]$HighSeverity = $false)
+    try {
+        $reasonText = if ($Reasons -and $Reasons.Count -gt 0) { ($Reasons | ForEach-Object { "- $_" }) -join "`r`n" } else { "- (keine Details)" }
+        $report = $Outlook.CreateItem(0)
+        $report.Subject = "[$Level] $($Item.Subject)"
+        $report.Body = "Automatisch vom Email-Processor erkannt und zur Pruefung an die IT weitergeleitet.`r`n`r`n" +
+            "Einstufung: $Level`r`n" +
+            "Absender: $($Item.SenderName) <$($Item.SenderEmailAddress)>`r`n" +
+            "Betreff: $($Item.Subject)`r`n" +
+            "Empfangen: $($Item.ReceivedTime)`r`n`r`n" +
+            "Gruende:`r`n$reasonText`r`n`r`n" +
+            "Die Original-E-Mail ist unveraendert als Anhang beigefuegt (fuer Header-Analyse, Melden an Provider/Anbieter etc.)."
+        if ($HighSeverity) { $report.Importance = 2 }
+        [void]$report.Attachments.Add($Item, 5)  # 5 = olEmbeddeditem: Original-Email unveraendert als Anhang
+        $report.Save()
+        [void]$report.Move((Resolve-Folder $Inbox "EmailProcessor/An IT melden"))
+    } catch {}
 }
 
 # ── Aktion ausführen (nach Genehmigung) ──────────────────────────────
@@ -982,7 +1005,7 @@ function Scan-Inbox {
             Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG: `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
             foreach ($r in $risk.hard) { Write-Log "  -> $r" "WARN" }
             try {
-                Quarantine-Suspicious-Email $mail $Inbox ($risk.hard + $risk.soft) $Config | Out-Null
+                Quarantine-Suspicious-Email $mail $Inbox ($risk.hard + $risk.soft) $Config $Outlook | Out-Null
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
             } catch { Write-Log "  -> Fehler bei Quarantaene: $_" "ERROR" }
@@ -991,10 +1014,12 @@ function Scan-Inbox {
 
         # Nur unsichere/weiche Signale: nicht quarantaenieren (koennte legitime dringende
         # Gaestenachricht sein), aber die normale Bearbeitung bekommt einen Vorsichtshinweis
+        # und eine Meldung geht trotzdem an die IT
         $cautionReasons = @($risk.soft)
         if ($cautionReasons.Count -gt 0) {
             Write-Log "[$i/$($mails.Count)] Ungewoehnliche Merkmale (unsicher): `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
             foreach ($r in $cautionReasons) { Write-Log "  -> $r" "WARN" }
+            Report-ToIT $mail $Inbox $Outlook $cautionReasons "Ungewöhnlich (weiches Indiz, unsicher)" $false
         }
 
         # Interne/Kollegen-Emails: rot markieren und als offene Aufgabe speichern
@@ -1047,7 +1072,7 @@ function Scan-Inbox {
             # KI erkennt Phishing/Betrug ohne technische Indizien (z.B. reine Text-Masche) -> ebenfalls isolieren
             if ($cls.category -eq 'phishing') {
                 Write-Log "  -> KI-Verdacht auf Phishing/Betrug: $($cls.reason)" "WARN"
-                Quarantine-Suspicious-Email $mail $Inbox (@("KI-Einschaetzung: $($cls.reason)") + $cautionReasons) $Config | Out-Null
+                Quarantine-Suspicious-Email $mail $Inbox (@("KI-Einschaetzung: $($cls.reason)") + $cautionReasons) $Config $Outlook | Out-Null
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
                 continue

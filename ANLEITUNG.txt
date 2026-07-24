@@ -74,6 +74,7 @@ Das Programm erstellt folgende Unterordner im Posteingang:
   │   └── Hotel Name 2
   ├── Buchung-Unbekannt   ← Hotel nicht erkannt, manuell prüfen
   ├── Sicherheitswarnung  ← Verdacht auf Phishing/Schadsoftware, NICHT öffnen, im Dashboard prüfen
+  ├── An IT melden        ← Meldekopien für die IT (siehe unten), Original unverändert als Anhang
   ├── Unbekannt           ← Nicht klassifizierbar
   └── Fehler              ← Verarbeitungsfehler
 
@@ -110,6 +111,20 @@ verdächtige Merkmale geprüft. Es gibt zwei Warnstufen:
   im Dashboard aber zusätzlich einen gelben Hinweis "Ungewöhnlich — sei
   vorsichtig" mit den gefundenen Auffälligkeiten, auch wenn nicht sicher
   gesagt werden kann, ob es sich um Phishing/Schadsoftware handelt.
+
+MELDUNG AN DIE IT
+------------------
+Sobald mindestens eine der beiden Stufen anspringt (egal ob sicher oder nur
+unsicher), wird zusätzlich automatisch eine Meldung in EmailProcessor/An IT
+melden abgelegt. Diese Meldung enthält:
+  - Absender, Betreff, Empfangszeit und die konkret erkannten Gründe
+  - die Original-E-Mail unverändert als Anhang (Kopfzeilen bleiben erhalten,
+    z.B. zur Analyse oder um sie beim Provider/Anbieter zu melden)
+So kann die IT diesen Ordner regelmäßig durchsehen und Gegenmaßnahmen
+ergreifen (z.B. Absender/Domain blockieren, andere Mitarbeiter warnen, bei
+abuse.ch/Provider melden) — unabhängig davon, was mit der ursprünglichen
+E-Mail selbst passiert (Quarantäne bei sicheren Treffern, normale
+Weiterverarbeitung bei nur unsicheren Treffern).
 
 Zusätzlich werden folgende Reputationsquellen abgefragt:
   - Windows Defender: scannt jeden Anhang lokal (kein Internet-Zugriff,
