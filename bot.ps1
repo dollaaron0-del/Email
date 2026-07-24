@@ -343,6 +343,10 @@ function Build-QueueEntry {
             $entry.proposed_action = "Wichtige Geschäftskorrespondenz - manuell bearbeiten"
             $entry.target_folder   = "EmailProcessor/Sonstiges"
         }
+        'security_threat' {
+            $entry.proposed_action = "SICHERHEITSWARNUNG - nicht oeffnen oder ausfuehren!"
+            $entry.target_folder   = "EmailProcessor/Sicherheitswarnung"
+        }
         default {
             $entry.proposed_action = "Kategorie unbekannt - manuell prüfen"
             $entry.target_folder   = "EmailProcessor/Unbekannt"
@@ -715,6 +719,74 @@ function Is-SuspiciousSpam {
     return $false
 }
 
+# ── Sicherheitsprüfung: Anhänge + Links + Phishing ───────────────────
+function Test-EmailSecurity {
+    param($Item, $Config)
+    $reasons = @()
+    $threatLevel = 'none'
+
+    # 1. Gefährliche Anhänge prüfen
+    $dangerExts = @('.exe','.bat','.cmd','.com','.pif','.scr','.vbs','.vbe','.js','.jse','.wsf','.wsh','.ps1','.ps2','.msi','.msp','.jar','.reg','.hta','.lnk','.iso','.img')
+    $warnExts   = @('.zip','.rar','.7z','.gz','.tar','.docm','.xlsm','.pptm','.dotm','.xltm','.xlam')
+    try {
+        foreach ($att in $Item.Attachments) {
+            $ext = [IO.Path]::GetExtension($att.FileName).ToLower()
+            if ($ext -in $dangerExts) {
+                $reasons += "Gefaehrlicher Anhang: $($att.FileName)"
+                $threatLevel = 'danger'
+            } elseif ($ext -in $warnExts) {
+                $reasons += "Verdaechtiger Anhang (Makro/Archiv): $($att.FileName)"
+                if ($threatLevel -eq 'none') { $threatLevel = 'warn' }
+            }
+        }
+    } catch {}
+
+    # 2. Verdächtige Links im Body prüfen
+    $body = if ($Item.Body) { $Item.Body } else { "" }
+    if ($body -match 'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') {
+        $reasons += "Link zu IP-Adresse (kein Domainname)"
+        if ($threatLevel -eq 'none') { $threatLevel = 'warn' }
+    }
+    $urlMatches = [regex]::Matches($body, 'https?://[^\s<>"]+')
+    foreach ($m in $urlMatches) {
+        $url = $m.Value
+        if ($url.Length -gt 200) {
+            $reasons += "Sehr langer/verdaechtiger Link ($($url.Substring(0,60))...)"
+            if ($threatLevel -eq 'none') { $threatLevel = 'warn' }
+            break
+        }
+        if ($url -match '(?i)(verify.{0,10}account|confirm.{0,10}password|update.{0,10}billing|paypal.{0,20}\.(?!com)|microsoft.{0,20}\.(?!com)|apple.{0,20}\.(?!com)|secure.{0,10}login\.)') {
+            $reasons += "Phishing-Muster in URL: $($url.Substring(0,[Math]::Min(80,$url.Length)))"
+            $threatLevel = 'danger'
+        }
+    }
+
+    # 3. LLM-Phishing-Analyse (nur wenn kein 'danger' durch Regeln und Ollama konfiguriert)
+    if ($threatLevel -ne 'danger' -and $Config.ollama_model) {
+        try {
+            $snippet = if ($body.Length -gt 500) { $body.Substring(0,500) } else { $body }
+            $prompt = "Analysiere diese E-Mail auf Phishing, Betrug oder Schadsoftware. Antworte NUR mit JSON.`n`nBetreff: $($Item.Subject)`nAbsender: $($Item.SenderEmailAddress)`nInhalt: $snippet`n`nFormat: {`"is_phishing`": false, `"confidence`": `"low`", `"reason`": `"`"}"
+            $reqBody = @{
+                model    = $Config.ollama_model
+                messages = @(@{ role = "user"; content = $prompt })
+                stream   = $false; format = "json"; options = @{ temperature = 0.0 }
+            } | ConvertTo-Json -Depth 10 -Compress
+            $ollamaUrl = if ($Config.ollama_url) { $Config.ollama_url } else { "http://localhost:11434/api/chat" }
+            $resp   = Invoke-RestMethod -Uri $ollamaUrl -Method POST `
+                -Body ([Text.Encoding]::UTF8.GetBytes($reqBody)) `
+                -ContentType "application/json; charset=utf-8" -TimeoutSec 60
+            $result = $resp.message.content | ConvertFrom-Json
+            if ($result.is_phishing -eq $true) {
+                $reasons += "LLM-Phishing-Erkennung ($($result.confidence)): $($result.reason)"
+                if ($result.confidence -in @('high','medium')) { $threatLevel = 'danger' }
+                elseif ($threatLevel -eq 'none') { $threatLevel = 'warn' }
+            }
+        } catch { Write-Log "  -> Sicherheitsanalyse (LLM) fehlgeschlagen: $_" "WARN" }
+    }
+
+    return @{ is_threat = ($threatLevel -ne 'none'); threat_level = $threatLevel; reasons = $reasons }
+}
+
 # ── Geschäfts-/Kollegenemails erkennen und überspringen ──────────────
 function Should-Skip {
     param($Item, $Config)
@@ -804,6 +876,27 @@ function Scan-Inbox {
             Add-To-Queue $taskEntry
             $processedKeys[$dedupKey] = $true
             Write-Log "  -> Rot markiert + als Aufgabe gespeichert"
+            continue
+        }
+
+        # Sicherheitsprüfung: Schadsoftware, Phishing, gefährliche Anhänge
+        $secCheck = Test-EmailSecurity $mail $Config
+        if ($secCheck.is_threat) {
+            $reasonStr = $secCheck.reasons -join " | "
+            Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG ($($secCheck.threat_level.ToUpper())): `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
+            Write-Log "  -> Gruende: $reasonStr" "WARN"
+            try {
+                $entry = Build-QueueEntry $mail 'security_threat' '' $Config
+                $entry.proposed_action  = "SICHERHEITSWARNUNG ($($secCheck.threat_level)): $reasonStr"
+                $entry.target_folder    = "EmailProcessor/Sicherheitswarnung"
+                $entry.security_warning = $reasonStr
+                $entry.threat_level     = $secCheck.threat_level
+                $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Sicherheitswarnung"))
+                $entry.entry_id = $moved.EntryID
+                Add-To-Queue $entry
+                $processedKeys[$dedupKey] = $true
+                Write-Log "  -> Verschoben nach: EmailProcessor/Sicherheitswarnung"
+            } catch { Write-Log "  -> Fehler beim Sicherheits-Handling: $_" "ERROR" }
             continue
         }
 
