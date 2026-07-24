@@ -522,6 +522,11 @@ function Execute-Entry {
                 # Rot markieren + hohe Priorität damit die Email sofort auffällt
                 try { $item.Importance = 2; $item.FlagStatus = 2; $item.Save() } catch {}
             }
+            'security_threat' {
+                # Email liegt bereits in EmailProcessor/Sicherheitswarnung (beim Scannen verschoben)
+                Write-Log "  -> Sicherheitswarnung bestaetigt, bleibt in $($Entry.target_folder)"
+                return "done"
+            }
             # 'advertisement' und andere: keine Sendung, nur verschieben
         }
         [void]$item.Move((Resolve-Folder $Inbox $Entry.target_folder))
