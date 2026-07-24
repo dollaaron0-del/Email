@@ -923,6 +923,7 @@ function Scan-Inbox {
         try {
             $cls   = Classify-Email $mail $Config
             $entry = Build-QueueEntry $mail $cls.category $cls.hotel $Config
+            $entry.security_status = 'clean'
 
             # Erst verschieben, dann neue EntryID speichern (EntryID aendert sich beim Verschieben)
             $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Zur Pruefung"))

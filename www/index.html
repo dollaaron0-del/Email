@@ -510,12 +510,22 @@ function renderQueue(items) {
           font-family:inherit;border:1px solid #dee2e6;color:#495057;line-height:1.5">
           ${esc(e.body_preview)}</div>
       </div>` : '';
-    const cardStyle = e.category === 'sonstiges'
+    const securityBanner = e.category === 'security_threat' ? `
+      <div class="alert alert-danger py-1 px-2 mb-2 d-flex align-items-center gap-2" style="font-size:.82rem">
+        <i class="bi bi-shield-x-fill fs-5 text-danger"></i>
+        <div><strong>Sicherheitswarnung</strong> — ${esc(e.security_warning||e.proposed_action)}</div>
+      </div>` : '';
+    const securityBadge = e.security_status === 'clean'
+      ? '<span class="badge bg-success ms-2" title="Sicherheitsprüfung bestanden — kein Phishing/Schadsoftware erkannt"><i class="bi bi-shield-check me-1"></i>Sicher</span>'
+      : '';
+    const cardStyle = e.category === 'security_threat'
+      ? 'border border-2 border-danger bg-danger bg-opacity-10'
+      : e.category === 'sonstiges'
       ? 'border border-2 border-danger bg-danger bg-opacity-10'
       : e.is_corrected ? 'border border-2 border-warning bg-warning bg-opacity-10' : 'bg-light';
     return `
     <div class="p-3 mb-2 rounded-3 ${cardStyle}" id="q-${esc(e.id)}">
-      ${sonstigesBanner}${correctedBanner}
+      ${securityBanner}${sonstigesBanner}${correctedBanner}
       <div class="d-flex align-items-start gap-3">
         <div class="mt-1">${badge(e.category)}</div>
         <div class="flex-grow-1">
@@ -523,6 +533,7 @@ function renderQueue(items) {
           <div class="small text-muted mb-1">
             <i class="bi bi-person me-1"></i>${esc(e.sender_name || e.sender)}
             <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(e.received)}</span>
+            ${securityBadge}
           </div>
           <div class="small">
             <i class="bi bi-arrow-right-circle text-${isReply ? 'warning' : 'primary'} me-1"></i>
