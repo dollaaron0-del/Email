@@ -165,6 +165,19 @@
         </div>
       </div>
     </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100" style="border-left:4px solid #7a0d1c">
+        <div class="d-flex align-items-start justify-content-between">
+          <div>
+            <div class="stat-value" id="stat-phishing" style="color:#7a0d1c">–</div>
+            <div class="text-muted small mt-1">Phishing/Schadsoftware erkannt</div>
+          </div>
+          <div class="rounded-3 p-2" style="background:rgba(122,13,28,.1)">
+            <i class="bi bi-bug-fill fs-4" style="color:#7a0d1c"></i>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Chart + Tabelle -->
@@ -256,6 +269,7 @@ function badge(cat) {
     advertisement:'<span class="badge bg-warning text-dark">Werbung</span>',
     booking:      '<span class="badge bg-success">Buchung</span>',
     sonstiges:    '<span class="badge bg-danger"><i class="bi bi-briefcase-fill me-1"></i>Geschäftspost</span>',
+    phishing:     '<span class="badge" style="background:#7a0d1c"><i class="bi bi-bug-fill me-1"></i>Phishing/Schadsoftware</span>',
   }[cat] || '<span class="badge bg-secondary">Unbekannt</span>';
 }
 
@@ -313,12 +327,13 @@ function loadLogs() {
 function refresh() {
   fetch('/api/stats').then(r=>r.json()).then(d => {
     const c = d.categories || {};
-    const nl = c.newsletter||0, ad = c.advertisement||0, bk = c.booking||0, ap = c.application||0, un = (c.unknown||0)+(c.error||0);
+    const nl = c.newsletter||0, ad = c.advertisement||0, bk = c.booking||0, ap = c.application||0, ph = c.phishing||0, un = (c.unknown||0)+(c.error||0);
 
     document.getElementById('stat-today').textContent       = d.today_processed ?? 0;
     document.getElementById('stat-total').textContent       = d.total_processed ?? 0;
     document.getElementById('stat-booking').textContent     = bk;
     document.getElementById('stat-application').textContent = ap;
+    document.getElementById('stat-phishing').textContent    = ph;
     document.getElementById('l-nl').textContent = nl;
     document.getElementById('l-ad').textContent = ad;
     document.getElementById('l-bk').textContent = bk;
@@ -393,6 +408,7 @@ const CAT_ICONS = {
   application:  'bi-person-lines-fill',
   advertisement:'bi-megaphone-fill',
   booking:      'bi-building-fill',
+  phishing:     'bi-bug-fill',
   unknown:      'bi-question-circle-fill'
 };
 
@@ -470,6 +486,15 @@ function renderQueue(items) {
         <i class="bi bi-briefcase-fill fs-5 text-danger"></i>
         <div><strong>Wichtige Geschäftskorrespondenz</strong> — diese Email passt in keine Standardkategorie und erfordert deine persönliche Bearbeitung. Nach Genehmigung: rot markiert in <code>EmailProcessor/Sonstiges</code>.</div>
       </div>` : '';
+    const phishingBanner = e.category === 'phishing' ? `
+      <div class="alert py-2 px-2 mb-2 d-flex align-items-start gap-2" style="font-size:.82rem;background:rgba(122,13,28,.12);border:1px solid #7a0d1c;color:#7a0d1c">
+        <i class="bi bi-shield-exclamation fs-5"></i>
+        <div>
+          <strong>Verdacht auf Phishing/Schadsoftware</strong> — Links NICHT anklicken, Anhänge NICHT öffnen, keine Zugangsdaten eingeben.
+          Die Email wurde bereits nach <code>EmailProcessor/Sicherheitswarnung</code> verschoben.
+          ${e.security_reasons && e.security_reasons.length ? '<ul class="mb-0 mt-1 ps-3">' + e.security_reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul>' : ''}
+        </div>
+      </div>` : '';
     const correctedBanner = e.is_corrected ? `
       <div class="alert alert-warning py-1 px-2 mb-2 d-flex align-items-center gap-2" style="font-size:.82rem">
         <i class="bi bi-arrow-repeat fs-5 text-warning"></i>
@@ -497,12 +522,14 @@ function renderQueue(items) {
           oninput="if(!replyState['${esc(e.id)}'])replyState['${esc(e.id)}']={}; replyState['${esc(e.id)}'].text=this.value"
           >${esc(replyText)}</textarea>
       </div>` : '';
-    const cardStyle = e.category === 'sonstiges'
+    const cardStyle = e.category === 'phishing'
+      ? 'border border-2' : e.category === 'sonstiges'
       ? 'border border-2 border-danger bg-danger bg-opacity-10'
       : e.is_corrected ? 'border border-2 border-warning bg-warning bg-opacity-10' : 'bg-light';
+    const cardExtraStyle = e.category === 'phishing' ? 'style="border-color:#7a0d1c!important;background:rgba(122,13,28,.06)"' : '';
     return `
-    <div class="p-3 mb-2 rounded-3 ${cardStyle}" id="q-${esc(e.id)}">
-      ${sonstigesBanner}${correctedBanner}
+    <div class="p-3 mb-2 rounded-3 ${cardStyle}" ${cardExtraStyle} id="q-${esc(e.id)}">
+      ${sonstigesBanner}${phishingBanner}${correctedBanner}
       <div class="d-flex align-items-start gap-3">
         <div class="mt-1">${badge(e.category)}</div>
         <div class="flex-grow-1">
@@ -545,6 +572,7 @@ const CATS = [
   { key: 'booking',       label: 'Buchung',        icon: 'bi-building-fill',     color: 'success'   },
   { key: 'application',   label: 'Bewerbung',      icon: 'bi-person-lines-fill', color: 'info'      },
   { key: 'sonstiges',     label: 'Geschäftspost',  icon: 'bi-briefcase-fill',    color: 'danger'    },
+  { key: 'phishing',      label: 'Phishing/Schadsoftware', icon: 'bi-bug-fill', color: 'danger'    },
   { key: 'unknown',       label: 'Unbekannt',      icon: 'bi-question-circle',   color: 'secondary' },
 ];
 const selectedCat = {};

@@ -123,6 +123,7 @@ Kategorien (waehle EXAKT eine):
 - application: Bewerbungen, Lebenslauf-Einsendungen, Jobanfragen - erkennbar an Karrieredomains (stepstone, linkedin, hotelpersonal, dki-lehrlinge) ODER expliziten Bewerbungsformulierungen
 - newsletter: Regelmaessige Rundschreiben, Magazine, Branchennews, oft mit Abmelde-Link
 - advertisement: Werbung, Verkaufsangebote, B2B-Marketing, Dienstleistungsangebote, Produktpraesentation
+- phishing: Verdacht auf Phishing/Betrug/Schadsoftware - Aufforderung zur Eingabe von Zugangsdaten, Kontosperrung-Drohungen, gefaelschte Rechnungen, CEO-Fraud, ungewoehnliche Zahlungsaufforderungen, Identitaetsdiebstahl-Versuche, verdaechtige Anhaenge/Links
 - sonstiges: Wichtige Geschaeftskorrespondenz, Partneranfragen, Kooperationen, externe Emails die in keine andere Kategorie passen
 
 Hotels:
@@ -152,18 +153,18 @@ Antworte NUR mit JSON: {"category":"...","hotel_name":null,"confidence":"high","
         $body = if ($Item.Body.Length -gt 800) { $Item.Body.Substring(0,800) } else { $Item.Body }
         $r = Invoke-Classify $body
         $cat = $r.category
-        if ($cat -notin @('newsletter','application','advertisement','booking','sonstiges','unknown')) { $cat = 'unknown' }
+        if ($cat -notin @('newsletter','application','advertisement','booking','phishing','sonstiges','unknown')) { $cat = 'unknown' }
         Write-Log "  -> $cat | Hotel: $($r.hotel_name) | $($r.confidence) | $($r.reason)"
-        return @{ category = $cat; hotel = "$($r.hotel_name)" }
+        return @{ category = $cat; hotel = "$($r.hotel_name)"; reason = "$($r.reason)" }
     } catch {
         Write-Log "  -> Erster Versuch fehlgeschlagen, retry mit laengerem Text..." "WARN"
         try {
             $body = if ($Item.Body.Length -gt 2000) { $Item.Body.Substring(0,2000) } else { $Item.Body }
             $r = Invoke-Classify $body
             $cat = $r.category
-            if ($cat -notin @('newsletter','application','advertisement','booking','sonstiges','unknown')) { $cat = 'unknown' }
+            if ($cat -notin @('newsletter','application','advertisement','booking','phishing','sonstiges','unknown')) { $cat = 'unknown' }
             Write-Log "  -> $cat | Hotel: $($r.hotel_name) | $($r.confidence) | $($r.reason)"
-            return @{ category = $cat; hotel = "$($r.hotel_name)" }
+            return @{ category = $cat; hotel = "$($r.hotel_name)"; reason = "$($r.reason)" }
         } catch {
             Write-Log "  -> Klassifizierungsfehler: $_" "ERROR"
             return @{ category = 'unknown'; hotel = $null }
@@ -327,11 +328,31 @@ function Build-QueueEntry {
             $entry.proposed_action = "Wichtige Geschäftskorrespondenz - manuell bearbeiten"
             $entry.target_folder   = "EmailProcessor/Sonstiges"
         }
+        'phishing' {
+            $entry.proposed_action = "ACHTUNG: Verdacht auf Phishing/Schadsoftware - Links/Anhänge NICHT öffnen. Bitte prüfen."
+            $entry.target_folder   = "EmailProcessor/Sicherheitswarnung"
+        }
         default {
             $entry.proposed_action = "Kategorie unbekannt - manuell prüfen"
             $entry.target_folder   = "EmailProcessor/Unbekannt"
         }
     }
+    return $entry
+}
+
+# ── Verdächtige Email isolieren (Phishing/Schadsoftware) ─────────────
+function Quarantine-Suspicious-Email {
+    param($Item, $Inbox, [string[]]$Reasons, $Config)
+    try { $Item.Importance = 2; $Item.FlagStatus = 2; $Item.Categories = "Phishing-Verdacht"; $Item.Save() } catch {}
+
+    $entry = Build-QueueEntry $Item 'phishing' '' $Config
+    $reasonText = if ($Reasons -and $Reasons.Count -gt 0) { $Reasons -join " | " } else { "Verdächtige Merkmale erkannt" }
+    $entry.proposed_action = "ACHTUNG: Verdacht auf Phishing/Schadsoftware - Links/Anhänge NICHT öffnen. Gründe: $reasonText"
+    $entry.security_reasons = $Reasons
+
+    $moved = $Item.Move((Resolve-Folder $Inbox "EmailProcessor/Sicherheitswarnung"))
+    $entry.entry_id = $moved.EntryID
+    Add-To-Queue $entry
     return $entry
 }
 
@@ -513,6 +534,11 @@ function Build-CorrectedEntry {
             $corr.target_email    = ""
             $corr.proposed_action = "Wichtige Geschäftskorrespondenz - manuell bearbeiten"
         }
+        'phishing' {
+            $corr.target_folder   = "EmailProcessor/Sicherheitswarnung"
+            $corr.target_email    = ""
+            $corr.proposed_action = "ACHTUNG: Verdacht auf Phishing/Schadsoftware - Links/Anhänge NICHT öffnen. Bitte prüfen."
+        }
         default {
             $corr.target_folder   = "EmailProcessor/Unbekannt"
             $corr.target_email    = ""
@@ -590,7 +616,7 @@ $statsFile = Join-Path $scriptDir "stats.json"
 
 function Load-Stats {
     $def = @{ total_processed=0; today_processed=0; last_date=""; last_checked="-";
-              categories=@{newsletter=0;application=0;advertisement=0;booking=0;unknown=0;error=0};
+              categories=@{newsletter=0;application=0;advertisement=0;booking=0;phishing=0;unknown=0;error=0};
               hotels=@{}; recent=@() }
     if (-not (Test-Path $statsFile)) { return $def }
     try {
@@ -598,7 +624,7 @@ function Load-Stats {
         $s = @{ total_processed=[int]$j.total_processed; today_processed=[int]$j.today_processed;
                 last_date=[string]$j.last_date; last_checked=[string]$j.last_checked;
                 categories=@{}; hotels=@{}; recent=@() }
-        foreach ($k in @('newsletter','application','advertisement','booking','sonstiges','unknown','error')) {
+        foreach ($k in @('newsletter','application','advertisement','booking','phishing','sonstiges','unknown','error')) {
             $s.categories[$k] = if ($j.categories.$k) { [int]$j.categories.$k } else { 0 }
         }
         if ($j.hotels) { $j.hotels.PSObject.Properties | ForEach-Object { $s.hotels[$_.Name] = [int]$_.Value } }
@@ -646,6 +672,104 @@ function Is-SuspiciousSpam {
     if ($local.Length -gt 12 -and $local -notmatch '[._]' -and $local -match '\d' -and $local -notmatch '^\w+[12][0-9]{3}$') { return $true }
 
     return $false
+}
+
+# ── Phishing/Schadsoftware-Erkennung ─────────────────────────────────
+$DangerousAttachmentExtensions = @('.exe','.scr','.bat','.cmd','.com','.pif','.vbs','.vbe','.js','.jse','.wsf','.wsh','.ps1','.psm1','.jar','.msi','.hta','.chm','.reg','.lnk','.iso','.img')
+$MacroAttachmentExtensions     = @('.docm','.xlsm','.pptm','.dotm','.xltm','.xlsb')
+$PhishingKeywordPattern = '(?i)(konto.{0,20}(gesperrt|deaktiviert|eingeschränkt)|passwort.{0,20}(ändern|bestätigen|aktualisieren)|verify your (account|identity|password)|dringend(er)?.{0,15}handlungsbedarf|klicken sie (hier|sofort|jetzt)|unusual (login|activity)|verdächtige (anmeldung|aktivität)|zahlung.{0,20}überfällig|rechnung.{0,15}(überfällig|sofort)|IBAN.{0,20}(geändert|aktualisiert|angepasst)|bankdaten.{0,20}(bestätigen|aktualisieren)|suspend(ed)? your account|account.{0,15}(locked|suspended)|bestätigen sie (ihre|jetzt) (daten|identität|zugangsdaten)|innerhalb von 24 stunden|within 24 hours|letzte mahnung|paket.{0,15}(zoll|gebühr).{0,15}(bezahlen|zahlen))'
+
+function Get-AttachmentRisk {
+    param($Item)
+    $hits = @()
+    try {
+        foreach ($att in $Item.Attachments) {
+            $fn  = $att.FileName
+            $ext = [IO.Path]::GetExtension($fn).ToLower()
+            $hasDoubleExt = [regex]::IsMatch($fn, '\.[A-Za-z0-9]{2,5}\.[A-Za-z0-9]{2,5}$')
+            if ($ext -in $DangerousAttachmentExtensions) {
+                $hits += "Gefaehrlicher Anhangstyp ($ext): $fn"
+            } elseif ($ext -in $MacroAttachmentExtensions) {
+                $hits += "Makro-faehiges Office-Dokument: $fn"
+            } elseif ($hasDoubleExt -and $ext -in @('.exe','.scr','.bat','.cmd','.js','.vbs','.pif','.com')) {
+                $hits += "Verschleierte doppelte Dateiendung: $fn"
+            }
+        }
+    } catch {}
+    return $hits
+}
+
+function Get-LinkRisk {
+    param($Item)
+    $hits = @()
+    try {
+        $html = $Item.HTMLBody
+        if (-not $html) { return $hits }
+        $linkMatches = [regex]::Matches($html, '(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
+        $seen = @{}
+        foreach ($m in $linkMatches) {
+            $href = $m.Groups[1].Value
+            $text = ($m.Groups[2].Value -replace '<[^>]+>','').Trim()
+            if ($href -notmatch '^https?://') { continue }
+            try { $hrefDomain = ([Uri]$href).Host.ToLower() } catch { continue }
+
+            # Link zeigt auf eine IP-Adresse statt auf eine Domain
+            if ($hrefDomain -match '^\d{1,3}(\.\d{1,3}){3}$' -and -not $seen.ContainsKey('ip')) {
+                $hits += "Link verweist auf IP-Adresse statt Domain: $hrefDomain"; $seen['ip'] = $true
+            }
+
+            # Sichtbarer Linktext nennt eine Domain, die vom tatsaechlichen Link abweicht
+            if ($text -match '([a-z0-9\-]+\.)+[a-z]{2,}' -and -not $seen.ContainsKey('mismatch')) {
+                $textDomain = $Matches[0].ToLower()
+                if ($hrefDomain -notlike "*$textDomain*" -and $textDomain -notlike "*$hrefDomain*") {
+                    $hits += "Linktext '$text' verweist tatsaechlich auf: $hrefDomain"; $seen['mismatch'] = $true
+                }
+            }
+        }
+    } catch {}
+    return $hits
+}
+
+function Get-KeywordRisk {
+    param($Item)
+    $text = "$($Item.Subject) $($Item.Body)"
+    if ($text -match $PhishingKeywordPattern) { return @("Verdaechtige Formulierung erkannt: '$($Matches[0].Trim())'") }
+    return @()
+}
+
+# Bekannte Marken: falls im Absendernamen genannt, aber die Absenderdomain nicht dazu passt
+$KnownBrandDomains = @{
+    'paypal'=@('paypal.com'); 'microsoft'=@('microsoft.com'); 'amazon'=@('amazon.de','amazon.com');
+    'dhl'=@('dhl.de','dhl.com'); 'apple'=@('apple.com'); 'google'=@('google.com'); 'ebay'=@('ebay.de','ebay.com');
+    'sparkasse'=@('sparkasse.de'); 'volksbank'=@('volksbank.de'); 'postbank'=@('postbank.de'); 'ionos'=@('ionos.de')
+}
+
+function Get-SpoofRisk {
+    param($Item)
+    $hits = @()
+    try {
+        $displayName = "$($Item.SenderName)"
+        $email  = $Item.SenderEmailAddress.ToLower()
+        $domain = if ($email -match '@(.+)$') { $Matches[1] } else { '' }
+        foreach ($brand in $KnownBrandDomains.Keys) {
+            if ($displayName -match "(?i)\b$brand\b") {
+                $matchesDomain = $false
+                foreach ($d in $KnownBrandDomains[$brand]) { if ($domain -like "*$d") { $matchesDomain = $true; break } }
+                if (-not $matchesDomain) { $hits += "Absendername nennt '$brand', Absenderdomain passt nicht: $domain" }
+            }
+        }
+    } catch {}
+    return $hits
+}
+
+function Test-PhishingRisk {
+    param($Item)
+    $reasons = @()
+    $reasons += Get-AttachmentRisk $Item
+    $reasons += Get-LinkRisk $Item
+    $reasons += Get-KeywordRisk $Item
+    $reasons += Get-SpoofRisk $Item
+    return $reasons
 }
 
 # ── Geschäfts-/Kollegenemails erkennen und überspringen ──────────────
@@ -717,6 +841,19 @@ function Scan-Inbox {
             continue
         }
 
+        # Phishing/Schadsoftware-Pruefung: hoechste Prioritaet, vor allen anderen Checks
+        $riskReasons = @(Test-PhishingRisk $mail)
+        if ($riskReasons.Count -gt 0) {
+            Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG: `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
+            foreach ($r in $riskReasons) { Write-Log "  -> $r" "WARN" }
+            try {
+                Quarantine-Suspicious-Email $mail $Inbox $riskReasons $Config | Out-Null
+                $processedKeys[$dedupKey] = $true
+                Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
+            } catch { Write-Log "  -> Fehler bei Quarantaene: $_" "ERROR" }
+            continue
+        }
+
         # Interne/Kollegen-Emails: rot markieren und als offene Aufgabe speichern
         if (-not $Config.test_mode -and (Should-Skip $mail $Config)) {
             Write-Log "Kollegen-Email: `"$($mail.Subject)`" | $($mail.SenderName)"
@@ -760,7 +897,17 @@ function Scan-Inbox {
 
         Write-Log "[$i/$($mails.Count)] Klassifiziere: `"$($mail.Subject)`" | $($mail.SenderName)"
         try {
-            $cls   = Classify-Email $mail $Config
+            $cls = Classify-Email $mail $Config
+
+            # KI erkennt Phishing/Betrug ohne technische Indizien (z.B. reine Text-Masche) -> ebenfalls isolieren
+            if ($cls.category -eq 'phishing') {
+                Write-Log "  -> KI-Verdacht auf Phishing/Betrug: $($cls.reason)" "WARN"
+                Quarantine-Suspicious-Email $mail $Inbox @("KI-Einschaetzung: $($cls.reason)") $Config | Out-Null
+                $processedKeys[$dedupKey] = $true
+                Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
+                continue
+            }
+
             $entry = Build-QueueEntry $mail $cls.category $cls.hotel $Config
 
             # Erst verschieben, dann neue EntryID speichern (EntryID aendert sich beim Verschieben)
