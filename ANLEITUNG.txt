@@ -168,14 +168,14 @@ BEKANNTE VERBLEIBENDE GRENZEN
 ------------------------------
 Damit klar ist, wo auch die aktuelle, bewusst strenge Filterung an ihre
 Grenzen stößt:
-  - Der Bot prüft E-Mails nur beim periodischen Scan (Prüfintervall, siehe
-    Konfiguration), nicht in dem Moment, in dem die Mail ankommt. In diesem
-    kurzen Zeitfenster liegt eine neue Mail ungeprüft im normalen
-    Posteingang. Ein kürzeres Prüfintervall (Standard jetzt: 2 Minuten,
-    einstellbar im Dashboard bis auf 1 Minute) verkleinert dieses Fenster,
-    schließt es aber nicht vollständig. Eine echte Sofort-Prüfung beim
-    Email-Eingang wäre nur mit einem größeren Umbau (Outlook-Ereignis statt
-    Zeitintervall) möglich.
+  - Der Bot reagiert jetzt zusätzlich auf Outlooks Echtzeit-Ereignis
+    "NewMailEx": sobald eine neue Mail eintrifft, wird (meist innerhalb
+    weniger Sekunden) sofort gescannt, statt auf das nächste Zeitintervall
+    zu warten. Das periodische Prüfintervall (Standard: 2 Minuten) läuft
+    parallel als Sicherheitsnetz weiter, falls das Ereignis einmal nicht
+    zuverlässig feuert (z.B. direkt nach einem Neustart von Outlook). Ein
+    minimales Zeitfenster bleibt dadurch technisch bestehen, ist aber auf
+    wenige Sekunden statt Minuten geschrumpft.
   - VirusTotal erkennt nur bereits bekannte Schadsoftware (Hash-Abgleich).
     Eine brandneue, noch nie gesehene Schaddatei erzeugt keinen Treffer.
   - Die Formulierungs- und Link-Text-Erkennung basiert auf Textmustern und

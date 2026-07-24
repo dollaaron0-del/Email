@@ -56,6 +56,29 @@ function Get-OutlookApp {
     catch { New-Object -ComObject Outlook.Application }
 }
 
+# ── Echtzeit-Erkennung neuer Mails (Ergaenzung, kein Ersatz fuer den periodischen Scan) ──
+# Der Event-Handler macht bewusst NICHTS ausser eine globale Flagge zu setzen: jede
+# COM-Interaktion mit Outlook (Scan-Inbox, Ollama-Aufrufe, Datei-I/O) laeuft weiterhin
+# nur in der Hauptschleife. Das vermeidet Reentrancy-/Deadlock-Probleme, die entstehen
+# koennen, wenn man aus einem COM-Event heraus direkt wieder mit Outlook interagiert.
+$NewMailEventSource   = "EmailProcessor_NewMail"
+$global:NewMailArrived = $false
+
+function Register-NewMailWatcher {
+    param($Outlook)
+    try { Get-EventSubscriber -SourceIdentifier $NewMailEventSource -ErrorAction SilentlyContinue | Unregister-Event -Force } catch {}
+    try {
+        Register-ObjectEvent -InputObject $Outlook -EventName NewMailEx -SourceIdentifier $NewMailEventSource -Action {
+            $global:NewMailArrived = $true
+        } | Out-Null
+        Write-Log "Echtzeit-Ereignis (NewMailEx) registriert - neue Mails werden fast sofort erkannt (Scanintervall bleibt als Sicherheitsnetz aktiv)"
+        return $true
+    } catch {
+        Write-Log "Konnte Echtzeit-Ereignis nicht registrieren, nur periodischer Scan aktiv: $_" "WARN"
+        return $false
+    }
+}
+
 function Get-OrCreate-Folder {
     param($Parent, [string]$Name)
     foreach ($f in $Parent.Folders) { if ($f.Name -eq $Name) { return $f } }
@@ -1172,12 +1195,13 @@ Write-Log "Bot gestartet - Sicherheitsmodus aktiv (manuelle Genehmigung erforder
 $app   = Get-OutlookApp
 $ns    = $app.GetNamespace("MAPI")
 $inbox = $ns.GetDefaultFolder(6)
+Register-NewMailWatcher $app | Out-Null
 
 $config          = Load-Config
 $lastScan        = [DateTime]::MinValue
 $scanIntervalSec = $config.check_interval_minutes * 60
 
-Write-Log "Modell: $($config.ollama_model) | Scanintervall: $($config.check_interval_minutes) Min. | Queue-Check: alle 10 Sek."
+Write-Log "Modell: $($config.ollama_model) | Scanintervall: $($config.check_interval_minutes) Min. (Sicherheitsnetz) | Queue-Check: alle 10 Sek."
 
 while ($true) {
     try {
@@ -1186,16 +1210,25 @@ while ($true) {
         # Posteingang neu laden (Outlook-Verbindung frisch halten)
         try { $inbox = $ns.GetDefaultFolder(6) } catch {
             Write-Log "Outlook-Verbindung verloren, versuche Neuverbindung..." "WARN"
-            try { $app = Get-OutlookApp; $ns = $app.GetNamespace("MAPI"); $inbox = $ns.GetDefaultFolder(6) }
+            try {
+                $app = Get-OutlookApp; $ns = $app.GetNamespace("MAPI"); $inbox = $ns.GetDefaultFolder(6)
+                Register-NewMailWatcher $app | Out-Null
+            }
             catch { Write-Log "Neuverbindung fehlgeschlagen: $_" "ERROR"; Start-Sleep -Seconds 10; continue }
         }
 
         # Queue alle 10 Sekunden prüfen (schnellere Reaktion auf Genehmigungen)
         Process-Queue $ns $inbox $app $config
 
-        # Posteingang nur alle N Minuten scannen
+        # Posteingang scannen: entweder weil das Scanintervall abgelaufen ist (Sicherheitsnetz),
+        # oder weil das NewMailEx-Ereignis eine gerade eingetroffene Mail gemeldet hat (Echtzeit)
         $now = [DateTime]::Now
-        if (($now - $lastScan).TotalSeconds -ge $scanIntervalSec) {
+        $intervalAbgelaufen = ($now - $lastScan).TotalSeconds -ge $scanIntervalSec
+        if ($intervalAbgelaufen -or $global:NewMailArrived) {
+            if ($global:NewMailArrived -and -not $intervalAbgelaufen) {
+                Write-Log "Neue Mail gemeldet (Echtzeit-Ereignis) - scanne sofort"
+            }
+            $global:NewMailArrived = $false
             Scan-Inbox $config $inbox $ns $app
             $lastScan        = $now
             $scanIntervalSec = $config.check_interval_minutes * 60
