@@ -495,6 +495,14 @@ function renderQueue(items) {
           ${e.security_reasons && e.security_reasons.length ? '<ul class="mb-0 mt-1 ps-3">' + e.security_reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul>' : ''}
         </div>
       </div>` : '';
+    const cautionBanner = (e.category !== 'phishing' && e.caution_reasons && e.caution_reasons.length) ? `
+      <div class="alert py-2 px-2 mb-2 d-flex align-items-start gap-2" style="font-size:.82rem;background:rgba(255,166,0,.12);border:1px solid #cc8400;color:#8a5a00">
+        <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+        <div>
+          <strong>Ungewöhnlich — sei vorsichtig</strong> — kann nicht sicher als Phishing/Schadsoftware eingestuft werden, aber diese Auffälligkeiten wurden gefunden. Links/Anhänge vorsichtshalber nicht ungeprüft öffnen.
+          <ul class="mb-0 mt-1 ps-3">${e.caution_reasons.map(r => '<li>' + esc(r) + '</li>').join('')}</ul>
+        </div>
+      </div>` : '';
     const correctedBanner = e.is_corrected ? `
       <div class="alert alert-warning py-1 px-2 mb-2 d-flex align-items-center gap-2" style="font-size:.82rem">
         <i class="bi bi-arrow-repeat fs-5 text-warning"></i>
@@ -522,14 +530,17 @@ function renderQueue(items) {
           oninput="if(!replyState['${esc(e.id)}'])replyState['${esc(e.id)}']={}; replyState['${esc(e.id)}'].text=this.value"
           >${esc(replyText)}</textarea>
       </div>` : '';
+    const hasCaution = e.category !== 'phishing' && e.caution_reasons && e.caution_reasons.length;
     const cardStyle = e.category === 'phishing'
+      ? 'border border-2' : hasCaution
       ? 'border border-2' : e.category === 'sonstiges'
       ? 'border border-2 border-danger bg-danger bg-opacity-10'
       : e.is_corrected ? 'border border-2 border-warning bg-warning bg-opacity-10' : 'bg-light';
-    const cardExtraStyle = e.category === 'phishing' ? 'style="border-color:#7a0d1c!important;background:rgba(122,13,28,.06)"' : '';
+    const cardExtraStyle = e.category === 'phishing' ? 'style="border-color:#7a0d1c!important;background:rgba(122,13,28,.06)"'
+      : hasCaution ? 'style="border-color:#cc8400!important;background:rgba(255,166,0,.05)"' : '';
     return `
     <div class="p-3 mb-2 rounded-3 ${cardStyle}" ${cardExtraStyle} id="q-${esc(e.id)}">
-      ${sonstigesBanner}${phishingBanner}${correctedBanner}
+      ${sonstigesBanner}${phishingBanner}${cautionBanner}${correctedBanner}
       <div class="d-flex align-items-start gap-3">
         <div class="mt-1">${badge(e.category)}</div>
         <div class="flex-grow-1">

@@ -700,11 +700,13 @@ function Get-AttachmentRisk {
 }
 
 function Get-LinkRisk {
+    # Hart = eindeutiges technisches Indiz (IP-Link). Weich = Text/Ziel weichen ab,
+    # kommt aber auch bei harmlosen Tracking-/Redirect-Links vor -> nur ein Verdacht.
     param($Item)
-    $hits = @()
+    $hard = @(); $soft = @()
     try {
         $html = $Item.HTMLBody
-        if (-not $html) { return $hits }
+        if (-not $html) { return @{ hard = $hard; soft = $soft } }
         $linkMatches = [regex]::Matches($html, '(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
         $seen = @{}
         foreach ($m in $linkMatches) {
@@ -715,21 +717,23 @@ function Get-LinkRisk {
 
             # Link zeigt auf eine IP-Adresse statt auf eine Domain
             if ($hrefDomain -match '^\d{1,3}(\.\d{1,3}){3}$' -and -not $seen.ContainsKey('ip')) {
-                $hits += "Link verweist auf IP-Adresse statt Domain: $hrefDomain"; $seen['ip'] = $true
+                $hard += "Link verweist auf IP-Adresse statt Domain: $hrefDomain"; $seen['ip'] = $true
             }
 
             # Sichtbarer Linktext nennt eine Domain, die vom tatsaechlichen Link abweicht
             if ($text -match '([a-z0-9\-]+\.)+[a-z]{2,}' -and -not $seen.ContainsKey('mismatch')) {
                 $textDomain = $Matches[0].ToLower()
                 if ($hrefDomain -notlike "*$textDomain*" -and $textDomain -notlike "*$hrefDomain*") {
-                    $hits += "Linktext '$text' verweist tatsaechlich auf: $hrefDomain"; $seen['mismatch'] = $true
+                    $soft += "Linktext '$text' verweist tatsaechlich auf: $hrefDomain"; $seen['mismatch'] = $true
                 }
             }
         }
     } catch {}
-    return $hits
+    return @{ hard = $hard; soft = $soft }
 }
 
+# Nur ein Formulierungs-Treffer allein ist kein sicheres Indiz (kommt auch in echten,
+# dringenden Gaestenachrichten vor) -> zaehlt als weiches/unsicheres Signal.
 function Get-KeywordRisk {
     param($Item)
     $text = "$($Item.Subject) $($Item.Body)"
@@ -839,12 +843,19 @@ function Get-DefenderVerdict {
 }
 
 function Test-PhishingRisk {
+    # Gibt @{ hard=[..]; soft=[..] } zurueck.
+    # "hard" = konkretes technisches Indiz -> sichere Quarantaene.
+    # "soft" = auffaellig, aber fuer sich allein nicht beweiskraeftig genug (z.B. koennte
+    #          eine echte dringende Gaestenachricht sein) -> nur Vorsichtshinweis, normale
+    #          Verarbeitung (Ollama-Klassifizierung, Weiterleitung ans Hotel etc.) laeuft weiter.
     param($Item, $Config)
-    $reasons = @()
-    $reasons += Get-AttachmentRisk $Item
-    $reasons += Get-LinkRisk $Item
-    $reasons += Get-KeywordRisk $Item
-    $reasons += Get-SpoofRisk $Item
+    $hard = @(); $soft = @()
+    $hard += Get-AttachmentRisk $Item
+    $linkRisk = Get-LinkRisk $Item
+    $hard += $linkRisk.hard
+    $soft += $linkRisk.soft
+    $soft += Get-KeywordRisk $Item
+    $hard += Get-SpoofRisk $Item
 
     $isInternal = ($Item.SenderEmailType -eq "EX")
 
@@ -855,11 +866,11 @@ function Test-PhishingRisk {
             try {
                 $att.SaveAsFile($tmp)
                 $defenderHit = Get-DefenderVerdict $tmp
-                if ($defenderHit) { $reasons += $defenderHit }
+                if ($defenderHit) { $hard += $defenderHit }
                 if (-not $isInternal -and $Config.virustotal_api_key) {
                     $sha = (Get-FileHash -Path $tmp -Algorithm SHA256 -ErrorAction Stop).Hash
                     $vtHit = Get-VTFileVerdict $sha $Config
-                    if ($vtHit) { $reasons += $vtHit }
+                    if ($vtHit) { $hard += $vtHit }
                 }
             } catch {} finally {
                 try { Remove-Item $tmp -Force -ErrorAction SilentlyContinue } catch {}
@@ -874,17 +885,26 @@ function Test-PhishingRisk {
             $links = @(Get-UniqueLinks $Item) | Select-Object -First 3
             foreach ($url in $links) {
                 $uhHit = Get-URLhausVerdict $url
-                if ($uhHit) { $reasons += $uhHit }
+                if ($uhHit) { $hard += $uhHit }
                 if ($Config.virustotal_api_key) {
                     Start-Sleep -Milliseconds 300
                     $vtHit = Get-VTUrlVerdict $url $Config
-                    if ($vtHit) { $reasons += $vtHit }
+                    if ($vtHit) { $hard += $vtHit }
                 }
             }
         } catch {}
     }
 
-    return $reasons
+    return @{ hard = $hard; soft = $soft }
+}
+
+# ── Vorsichtshinweis an einen Queue-Eintrag anhaengen (unsichere/weiche Signale) ──
+function Add-CautionNote {
+    param($Entry, [string[]]$CautionReasons)
+    if ($CautionReasons -and $CautionReasons.Count -gt 0) {
+        $Entry.caution_reasons = $CautionReasons
+        $Entry.proposed_action = "⚠ Ungewöhnlich (" + ($CautionReasons -join ' | ') + ") - kann nicht sicher als Phishing/Schadsoftware eingestuft werden, bitte vorsichtig prüfen. " + $Entry.proposed_action
+    }
 }
 
 # ── Geschäfts-/Kollegenemails erkennen und überspringen ──────────────
@@ -957,16 +977,24 @@ function Scan-Inbox {
         }
 
         # Phishing/Schadsoftware-Pruefung: hoechste Prioritaet, vor allen anderen Checks
-        $riskReasons = @(Test-PhishingRisk $mail $Config)
-        if ($riskReasons.Count -gt 0) {
+        $risk = Test-PhishingRisk $mail $Config
+        if ($risk.hard.Count -gt 0) {
             Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG: `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
-            foreach ($r in $riskReasons) { Write-Log "  -> $r" "WARN" }
+            foreach ($r in $risk.hard) { Write-Log "  -> $r" "WARN" }
             try {
-                Quarantine-Suspicious-Email $mail $Inbox $riskReasons $Config | Out-Null
+                Quarantine-Suspicious-Email $mail $Inbox ($risk.hard + $risk.soft) $Config | Out-Null
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
             } catch { Write-Log "  -> Fehler bei Quarantaene: $_" "ERROR" }
             continue
+        }
+
+        # Nur unsichere/weiche Signale: nicht quarantaenieren (koennte legitime dringende
+        # Gaestenachricht sein), aber die normale Bearbeitung bekommt einen Vorsichtshinweis
+        $cautionReasons = @($risk.soft)
+        if ($cautionReasons.Count -gt 0) {
+            Write-Log "[$i/$($mails.Count)] Ungewoehnliche Merkmale (unsicher): `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
+            foreach ($r in $cautionReasons) { Write-Log "  -> $r" "WARN" }
         }
 
         # Interne/Kollegen-Emails: rot markieren und als offene Aufgabe speichern
@@ -985,6 +1013,7 @@ function Scan-Inbox {
                 status      = "open_task"
                 proposed_action = "Manuelle Bearbeitung"
             }
+            Add-CautionNote $taskEntry $cautionReasons
             Add-To-Queue $taskEntry
             $processedKeys[$dedupKey] = $true
             Write-Log "  -> Rot markiert + als Aufgabe gespeichert"
@@ -997,6 +1026,7 @@ function Scan-Inbox {
             try {
                 $entry = Build-QueueEntry $mail 'advertisement' '' $Config
                 $entry.proposed_action = "Archivieren (verdaechtiger Spam-Absender — kein echter Name gesetzt)"
+                Add-CautionNote $entry $cautionReasons
                 $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Zur Pruefung"))
                 $entry.entry_id = $moved.EntryID
                 Add-To-Queue $entry
@@ -1017,13 +1047,14 @@ function Scan-Inbox {
             # KI erkennt Phishing/Betrug ohne technische Indizien (z.B. reine Text-Masche) -> ebenfalls isolieren
             if ($cls.category -eq 'phishing') {
                 Write-Log "  -> KI-Verdacht auf Phishing/Betrug: $($cls.reason)" "WARN"
-                Quarantine-Suspicious-Email $mail $Inbox @("KI-Einschaetzung: $($cls.reason)") $Config | Out-Null
+                Quarantine-Suspicious-Email $mail $Inbox (@("KI-Einschaetzung: $($cls.reason)") + $cautionReasons) $Config | Out-Null
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> In EmailProcessor/Sicherheitswarnung verschoben, wartet auf Pruefung"
                 continue
             }
 
             $entry = Build-QueueEntry $mail $cls.category $cls.hotel $Config
+            Add-CautionNote $entry $cautionReasons
 
             # Erst verschieben, dann neue EntryID speichern (EntryID aendert sich beim Verschieben)
             $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Zur Pruefung"))

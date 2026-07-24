@@ -81,22 +81,35 @@ Das Programm erstellt folgende Unterordner im Posteingang:
 PHISHING-/SCHADSOFTWARE-FILTER
 --------------------------------
 Jede eingehende E-Mail wird vor der normalen Klassifizierung automatisch auf
-verdächtige Merkmale geprüft:
+verdächtige Merkmale geprüft. Es gibt zwei Warnstufen:
+
+1) SICHER (harte Indizien) → sofortige Quarantäne:
   - Gefährliche Anhangstypen (.exe, .scr, .vbs, .js, .lnk, ...) und
     makrofähige Office-Dokumente (.docm, .xlsm, ...)
   - Verschleierte doppelte Dateiendungen (z.B. "rechnung.pdf.exe")
-  - Links, deren sichtbarer Text eine andere Domain nennt als das
-    tatsächliche Ziel, sowie Links auf reine IP-Adressen
-  - Typische Phishing-Formulierungen ("Konto gesperrt", "Passwort bestätigen", ...)
+  - Links auf reine IP-Adressen statt auf eine Domain
   - Absendernamen, die eine bekannte Marke nennen, aber von einer
     abweichenden Domain kommen
+  - Positive Treffer bei Windows Defender, VirusTotal oder URLhaus
 
-Treffer werden NIEMALS automatisch gelöscht oder weitergeleitet. Die E-Mail
-wird lediglich sofort in EmailProcessor/Sicherheitswarnung verschoben und
-rot markiert. Im Dashboard erscheint sie mit den erkannten Gründen zur
-manuellen Prüfung — erst nach deiner Genehmigung wird sie endgültig archiviert.
-Zusätzlich bewertet auch Ollama jede E-Mail auf Phishing/Betrugsversuche
-(z.B. CEO-Fraud ohne Anhang/Link) und behandelt Treffer genauso.
+  Diese E-Mails werden NIEMALS automatisch gelöscht oder weitergeleitet,
+  sondern sofort in EmailProcessor/Sicherheitswarnung verschoben und rot
+  markiert. Im Dashboard erscheinen sie mit den erkannten Gründen zur
+  manuellen Prüfung — erst nach deiner Genehmigung werden sie endgültig
+  archiviert. Auch Ollama bewertet jede E-Mail auf Phishing/Betrugsversuche
+  (z.B. CEO-Fraud ohne Anhang/Link) und landet bei einem Treffer ebenfalls hier.
+
+2) UNSICHER (weiche Indizien) → Vorsichtshinweis statt Quarantäne:
+  - Nur eine verdächtige Formulierung (z.B. "dringend", "Beschwerde") ohne
+    weitere Auffälligkeit
+  - Linktext nennt eine Domain, die vom tatsächlichen Linkziel abweicht
+
+  Diese Signale reichen allein nicht als Beweis (z.B. könnte es eine echte
+  dringende Gästeanfrage sein). Die E-Mail wird deshalb ganz normal weiter
+  bearbeitet (Ollama-Klassifizierung, Weiterleitung ans Hotel usw.), bekommt
+  im Dashboard aber zusätzlich einen gelben Hinweis "Ungewöhnlich — sei
+  vorsichtig" mit den gefundenen Auffälligkeiten, auch wenn nicht sicher
+  gesagt werden kann, ob es sich um Phishing/Schadsoftware handelt.
 
 Zusätzlich werden folgende Reputationsquellen abgefragt:
   - Windows Defender: scannt jeden Anhang lokal (kein Internet-Zugriff,
