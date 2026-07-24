@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
@@ -259,8 +259,10 @@ function badge(cat) {
   }[cat] || '<span class="badge bg-secondary">Unbekannt</span>';
 }
 
-// Speichert Textarea-Text und gewählte Sprache über Queue-Refreshes hinweg
-const replyState = {}; // id -> { text, lang }
+// Zustand über Auto-Refreshes hinweg bewahren
+const replyState      = {}; // id -> { text, lang }
+const bodyOpenIds     = new Set(); // IDs mit geöffnetem Email-Text
+const rejectFormState = {}; // id -> { cat, hotel } für offene Ablehnungs-Formulare
 
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -497,6 +499,17 @@ function renderQueue(items) {
           oninput="if(!replyState['${esc(e.id)}'])replyState['${esc(e.id)}']={}; replyState['${esc(e.id)}'].text=this.value"
           >${esc(replyText)}</textarea>
       </div>` : '';
+    const bodySection = e.body_preview ? `
+      <div class="mt-2">
+        <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.78rem;text-decoration:none"
+          onclick="toggleBody('${esc(e.id)}')">
+          <i class="bi bi-envelope-open me-1" id="body-icon-${esc(e.id)}"></i><span id="body-lbl-${esc(e.id)}">Email-Text anzeigen</span>
+        </button>
+        <div id="body-${esc(e.id)}" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;
+          background:#fff;border-radius:6px;padding:10px;font-size:.8rem;white-space:pre-wrap;
+          font-family:inherit;border:1px solid #dee2e6;color:#495057;line-height:1.5">
+          ${esc(e.body_preview)}</div>
+      </div>` : '';
     const cardStyle = e.category === 'sonstiges'
       ? 'border border-2 border-danger bg-danger bg-opacity-10'
       : e.is_corrected ? 'border border-2 border-warning bg-warning bg-opacity-10' : 'bg-light';
@@ -522,6 +535,7 @@ function renderQueue(items) {
             }
           </div>
           ${replySection}
+          ${bodySection}
         </div>
         <div class="d-flex flex-column gap-2 flex-shrink-0" id="btn-${esc(e.id)}">
           <button class="btn btn-success btn-sm px-3" onclick="queueAction('${esc(e.id)}','approve')">
@@ -532,6 +546,9 @@ function renderQueue(items) {
           </button>
           <button class="btn btn-outline-secondary btn-sm px-3" onclick="ignoreEmail('${esc(e.id)}')" title="Email wird in EmailProcessor/Ignoriert verschoben — keine weitere Aktion">
             <i class="bi bi-eye-slash me-1"></i>Ignorieren
+          </button>
+          <button class="btn btn-outline-primary btn-sm px-3" onclick="openInOutlook('${esc(e.id)}','${esc(e.entry_id)}')" title="Email in Outlook öffnen zur Überprüfung">
+            <i class="bi bi-envelope-open me-1"></i>In Outlook
           </button>
         </div>
       </div>
@@ -641,7 +658,9 @@ function queueAction(id, action, rejectionReason, correctCategory, correctHotel)
   const ta  = document.getElementById('reply-' + id);
   const body = { id };
   if (ta) body.reply_text = ta.value;
-  delete replyState[id]; // Gespeicherten Zustand löschen nach Aktion
+  delete replyState[id];
+  delete rejectFormState[id];
+  bodyOpenIds.delete(id);
   if (rejectionReason)  body.rejection_reason  = rejectionReason;
   if (correctCategory)  body.correct_category  = correctCategory;
   if (correctHotel)     body.correct_hotel     = correctHotel;
@@ -677,13 +696,49 @@ function queueAction(id, action, rejectionReason, correctCategory, correctHotel)
 }
 
 function loadQueue() {
-  // Aktuelle Textarea-Inhalte sichern bevor neu gerendert wird
+  // Textarea-Inhalte sichern
   document.querySelectorAll('[id^="reply-"]').forEach(ta => {
     const id = ta.id.replace('reply-', '');
     if (!replyState[id]) replyState[id] = {};
     replyState[id].text = ta.value;
   });
-  fetch('/api/queue').then(r=>r.json()).then(renderQueue).catch(()=>{});
+  // Offene Ablehnungs-Formulare sichern (confirm-Button existiert nur im Reject-Modus)
+  document.querySelectorAll('[id^="confirm-"]').forEach(btn => {
+    const id = btn.id.replace('confirm-', '');
+    const hotelSel = document.getElementById('hotelsel-' + id);
+    rejectFormState[id] = {
+      cat:   selectedCat[id] || null,
+      hotel: hotelSel ? hotelSel.value : null
+    };
+  });
+
+  fetch('/api/queue').then(r => r.json()).then(items => {
+    renderQueue(items);
+
+    // Email-Texte wiederherstellen
+    bodyOpenIds.forEach(id => {
+      const el = document.getElementById('body-' + id);
+      if (!el) { bodyOpenIds.delete(id); return; }
+      el.style.display = '';
+      const lbl = document.getElementById('body-lbl-' + id);
+      const ico = document.getElementById('body-icon-' + id);
+      if (lbl) lbl.textContent = 'Email-Text ausblenden';
+      if (ico) ico.className   = 'bi bi-envelope me-1';
+    });
+
+    // Ablehnungs-Formulare wiederherstellen
+    Object.entries(rejectFormState).forEach(([id, state]) => {
+      if (!document.getElementById('q-' + id)) { delete rejectFormState[id]; return; }
+      showRejectForm(id);
+      if (state.cat) {
+        selectCat(id, state.cat);
+        if (state.cat === 'booking' && state.hotel) {
+          const sel = document.getElementById('hotelsel-' + id);
+          if (sel) sel.value = state.hotel;
+        }
+      }
+    });
+  }).catch(() => {});
 }
 
 loadQueue();
@@ -708,6 +763,12 @@ function renderTasks(items) {
             <i class="bi bi-person me-1"></i>${esc(t.sender_name || t.sender)}
             <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(t.received)}</span>
           </div>
+          ${t.body_preview ? `<div class="mt-2">
+            <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.78rem;text-decoration:none" onclick="toggleBody('task-${esc(t.id)}')">
+              <i class="bi bi-envelope-open me-1" id="body-icon-task-${esc(t.id)}"></i><span id="body-lbl-task-${esc(t.id)}">Email-Text anzeigen</span>
+            </button>
+            <div id="body-task-${esc(t.id)}" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;background:#fff;border-radius:6px;padding:10px;font-size:.8rem;white-space:pre-wrap;font-family:inherit;border:1px solid #dee2e6;color:#495057;line-height:1.5">${esc(t.body_preview)}</div>
+          </div>` : ''}
         </div>
         <button class="btn btn-outline-secondary btn-sm flex-shrink-0" onclick="markTaskDone('${esc(t.id)}', this)">
           <i class="bi bi-check-lg me-1"></i>Erledigt
@@ -751,6 +812,12 @@ function renderErrors(items) {
             <span class="ms-2"><i class="bi bi-clock me-1"></i>${esc(e.received)}</span>
           </div>
           <div class="small text-danger mt-1"><i class="bi bi-info-circle me-1"></i>Aktion fehlgeschlagen: ${esc(e.proposed_action)}</div>
+          ${e.body_preview ? `<div class="mt-2">
+            <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.78rem;text-decoration:none" onclick="toggleBody('err-${esc(e.id)}')">
+              <i class="bi bi-envelope-open me-1" id="body-icon-err-${esc(e.id)}"></i><span id="body-lbl-err-${esc(e.id)}">Email-Text anzeigen</span>
+            </button>
+            <div id="body-err-${esc(e.id)}" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;background:#fff;border-radius:6px;padding:10px;font-size:.8rem;white-space:pre-wrap;font-family:inherit;border:1px solid #dee2e6;color:#495057;line-height:1.5">${esc(e.body_preview)}</div>
+          </div>` : ''}
         </div>
         <div class="d-flex flex-column gap-1 flex-shrink-0">
           <button class="btn btn-warning btn-sm" onclick="retryError('${esc(e.id)}', this)">
@@ -808,6 +875,40 @@ function ignoreEmail(id) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id })
   }).catch(() => { loadQueue(); });
+}
+
+function openInOutlook(id, entryId) {
+  const btn = event.currentTarget;
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Öffne...';
+  fetch('/api/email/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry_id: entryId })
+  }).then(r => r.json()).then(d => {
+    if (!d.success) {
+      btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Fehler';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 2000);
+    } else {
+      btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Geöffnet';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1500);
+    }
+  }).catch(() => {
+    btn.disabled = false; btn.innerHTML = orig;
+  });
+}
+
+function toggleBody(id) {
+  const el  = document.getElementById('body-' + id);
+  const lbl = document.getElementById('body-lbl-' + id);
+  const ico = document.getElementById('body-icon-' + id);
+  if (!el) return;
+  const shown = el.style.display !== 'none';
+  el.style.display = shown ? 'none' : '';
+  if (lbl) lbl.textContent = shown ? 'Email-Text anzeigen' : 'Email-Text ausblenden';
+  if (ico) ico.className   = shown ? 'bi bi-envelope-open me-1' : 'bi bi-envelope me-1';
+  if (shown) bodyOpenIds.delete(id); else bodyOpenIds.add(id);
 }
 
 let botRunning = false;

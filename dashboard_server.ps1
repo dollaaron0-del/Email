@@ -1,4 +1,4 @@
-# Dashboard HTTP-Server — kein Admin noetig (localhost only)
+﻿# Dashboard HTTP-Server — kein Admin noetig (localhost only)
 $scriptDir = $PSScriptRoot
 $wwwDir    = Join-Path $scriptDir "www"
 
@@ -224,6 +224,20 @@ while ($true) {
                     Send-Text $ctx (Get-Content $f -Raw -Encoding UTF8) "application/json; charset=utf-8"
                 } else {
                     Send-Text $ctx "[]" "application/json; charset=utf-8"
+                }
+            }
+
+            "/api/email/open" {
+                $body = (New-Object IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)).ReadToEnd()
+                $data = $body | ConvertFrom-Json
+                try {
+                    $ol  = [Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
+                    $ns  = $ol.GetNamespace("MAPI")
+                    $item = $ns.GetItemFromID($data.entry_id)
+                    $item.Display()
+                    Send-Text $ctx '{"success":true}' "application/json; charset=utf-8"
+                } catch {
+                    Send-Text $ctx "{`"success`":false,`"error`":`"$($_ -replace '"',"'")`"}" "application/json; charset=utf-8"
                 }
             }
 

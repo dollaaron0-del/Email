@@ -1,4 +1,4 @@
-# Email-Processor Bot - PowerShell + Outlook + Ollama
+﻿# Email-Processor Bot - PowerShell + Outlook + Ollama
 # Emails werden NICHT automatisch versendet - zuerst im Dashboard genehmigen!
 $ErrorActionPreference = "Continue"
 $scriptDir       = $PSScriptRoot
@@ -69,13 +69,22 @@ function Resolve-Folder {
     $f
 }
 
-function Get-UnsubscribeHeader {
+function Get-UnsubscribeInfo {
     param($Item)
+    $info = @{ raw = ""; mailto = ""; http = ""; one_click = $false }
     try {
         $h = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x007D001E")
-        if ($h -match "(?i)List-Unsubscribe:\s*(.+?)(\r?\n\S|\z)") { return $Matches[1].Trim() }
+        if ($h -match "(?i)List-Unsubscribe:\s*(.+?)(\r?\n\S|\z)") {
+            $raw = $Matches[1].Trim()
+            $info.raw = $raw
+            if ($raw -match '<mailto:([^>]+)>') { $info.mailto = $Matches[1] }
+            if ($raw -match '<(https?://[^>]+)>') { $info.http = $Matches[1] }
+        }
+        if ($h -match '(?i)List-Unsubscribe-Post:\s*List-Unsubscribe=One-Click') {
+            $info.one_click = $true
+        }
     } catch {}
-    ""
+    return $info
 }
 
 function Find-Hotel {
@@ -275,20 +284,27 @@ function Build-QueueEntry {
         proposed_action  = ""
         target_folder    = "EmailProcessor/Fehler"
         target_email     = ""
-        unsubscribe_header = ""
+        unsubscribe_header   = ""
+        unsubscribe_http     = ""
+        unsubscribe_mailto   = ""
+        unsubscribe_one_click = $false
+        body_preview = if ($Item.Body) { $b = $Item.Body.Trim(); if ($b.Length -gt 2000) { $b.Substring(0,2000) + "…" } else { $b } } else { "" }
     }
 
     switch ($Category) {
         'newsletter' {
-            $h = Get-UnsubscribeHeader $Item
-            $entry.unsubscribe_header = $h
-            if ($h -match '<mailto:') {
+            $u = Get-UnsubscribeInfo $Item
+            $entry.unsubscribe_header    = $u.raw
+            $entry.unsubscribe_http      = $u.http
+            $entry.unsubscribe_mailto    = $u.mailto
+            $entry.unsubscribe_one_click = $u.one_click
+            if ($u.http) {
+                $entry.unsubscribe_method = "http"
+                $entry.proposed_action    = if ($u.one_click) { "RFC 8058 One-Click Abmeldung (automatisch)" } else { "Abmelde-Webseite aufrufen + Button klicken" }
+                $entry.target_folder      = "EmailProcessor/Abgemeldet"
+            } elseif ($u.mailto) {
                 $entry.unsubscribe_method = "mailto"
                 $entry.proposed_action    = "Abmelde-Email senden"
-                $entry.target_folder      = "EmailProcessor/Abgemeldet"
-            } elseif ($h -match '<https?://') {
-                $entry.unsubscribe_method = "http"
-                $entry.proposed_action    = "Abmelde-Webseite aufrufen + Button klicken"
                 $entry.target_folder      = "EmailProcessor/Abgemeldet"
             } else {
                 $entry.unsubscribe_method = "none"
@@ -337,51 +353,91 @@ function Build-QueueEntry {
 
 # ── Aktion ausführen (nach Genehmigung) ──────────────────────────────
 function Invoke-WebUnsubscribe {
-    param([string]$Url)
+    param([string]$Url, [bool]$OneClick = $false)
+
+    $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    $reqHdr = @{
+        "User-Agent"      = $ua
+        "Accept"          = "text/html,application/xhtml+xml,*/*;q=0.9"
+        "Accept-Language" = "de-DE,de;q=0.9,en;q=0.8"
+    }
+
+    # RFC 8058 One-Click: einfacher POST, keine Seiteninteraktion nötig
+    if ($OneClick) {
+        try {
+            $r = Invoke-WebRequest -Uri $Url -Method POST -Headers $reqHdr `
+                -Body "List-Unsubscribe=One-Click" `
+                -ContentType "application/x-www-form-urlencoded" `
+                -TimeoutSec 15 -UseBasicParsing
+            if ($r.StatusCode -lt 400) {
+                return @{ method = "rfc8058"; message = "RFC 8058 One-Click Abmeldung erfolgreich (HTTP $($r.StatusCode))" }
+            }
+        } catch {
+            Write-Log "  -> RFC 8058 POST fehlgeschlagen, versuche normales GET..." "WARN"
+        }
+    }
+
+    # Phrasen für erkannte Abmeldung (DE/EN/FR/NL/ES)
+    $confirmRx = '(?i)(erfolgreich.{0,12}abgemeldet|abmeldung.erfolgreich|erfolgreich.entfernt|abonnement.gek.ndigt|unsubscribed|successfully.removed|opt.?out.success|you.ve been unsubscribed|you have been unsubscribed|you.re.unsubscribed|have been removed|no longer receive|désabonné|vous avez .t. désabonné|afgemeld|avmeldt|dado de baja)'
+
     try {
-        # Schritt 1: Seite laden
-        $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec 20 -UseBasicParsing -SessionVariable sess
+        $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec 20 -UseBasicParsing -SessionVariable sess -Headers $reqHdr
         $html = $resp.Content
 
-        # Schritt 2: Direkte Bestätigung durch GET?
-        if ($html -match '(?i)(erfolgreich abgemeldet|unsubscribed|successfully removed|opt.out successful|abmeldung erfolgreich|you.ve been unsubscribed|you have been unsubscribed)') {
+        # Direkte Bestätigung per GET?
+        if ($html -match $confirmRx) {
             return @{ method = "get"; message = "Seite bestätigt Abmeldung direkt (kein Klick nötig)" }
         }
 
-        # Schritt 3: Abmelde-Formular auf der Seite suchen und abschicken
+        $base = [Uri]$Url
+
+        # Abmelde-Formular suchen und abschicken
         $formPattern = "(?is)<form[^>]*?action=""?([^\s"">]+)""?[^>]*?>(.*?)</form>"
-        $formMatches = [regex]::Matches($html, $formPattern)
-        foreach ($fm in $formMatches) {
+        foreach ($fm in [regex]::Matches($html, $formPattern)) {
             $action  = $fm.Groups[1].Value
             $content = $fm.Groups[2].Value
-            if ($content -notmatch '(?i)(unsubscribe|abmeld|opt.?out|austragen|confirm|remove)') { continue }
+            if ($content -notmatch '(?i)(unsubscribe|abmeld|opt.?out|austragen|confirm|remove|abbestell)') { continue }
 
-            # Absolute URL aufbauen
-            $base = [Uri]$Url
             $actionUrl = if ($action -match '^https?://') { $action }
                          elseif ($action.StartsWith('/'))  { "$($base.Scheme)://$($base.Host)$action" }
                          else                              { "$($base.Scheme)://$($base.Host)/$action" }
-
-            # Alle Input-Felder sammeln (hidden + submit)
             $fields = @{}
-            $inputPattern = "(?i)<input([^>]+)>"
-            [regex]::Matches($content, $inputPattern) | ForEach-Object {
+            [regex]::Matches($content, '(?i)<input([^>]+)>') | ForEach-Object {
                 $inp   = $_.Groups[1].Value
-                $type  = if ($inp -match '(?i)type="?(\w+)') { $Matches[1] } else { "text" }
+                $itype = if ($inp -match '(?i)type="?(\w+)') { $Matches[1] } else { "text" }
                 $name  = if ($inp -match '(?i)name="([^">\s]+)"') { $Matches[1] } else { $null }
                 $value = if ($inp -match '(?i)value="([^"]*)"')    { $Matches[1] } else { "" }
-                if ($name -and $type -in @('hidden','submit','email','text')) { $fields[$name] = $value }
+                if ($name -and $itype -in @('hidden','submit','email','text','checkbox')) { $fields[$name] = $value }
+            }
+            # <button name="..."> ebenfalls erfassen
+            [regex]::Matches($content, '(?i)<button[^>]+name="([^"]+)"[^>]*(?:value="([^"]*)")?') | ForEach-Object {
+                $bname = $_.Groups[1].Value; $bval = $_.Groups[2].Value
+                if ($bname) { $fields[$bname] = $bval }
             }
 
-            $postResp = Invoke-WebRequest -Uri $actionUrl -Method POST -Body $fields -TimeoutSec 20 -UseBasicParsing -WebSession $sess
-            if ($postResp.Content -match '(?i)(erfolgreich|unsubscribed|success|removed|abgemeldet)') {
-                return @{ method = "post"; message = "Formular abgeschickt - Seite bestaetigt Abmeldung" }
+            $postResp = Invoke-WebRequest -Uri $actionUrl -Method POST -Body $fields -TimeoutSec 20 -UseBasicParsing -WebSession $sess -Headers $reqHdr
+            if ($postResp.Content -match $confirmRx) {
+                return @{ method = "post_form"; message = "Formular abgeschickt - Seite bestätigt Abmeldung" }
             }
-            return @{ method = "post"; message = "Formular abgeschickt (keine Bestaetigung erkannt - ggf. manuell pruefen)" }
+            return @{ method = "post_form"; message = "Formular abgeschickt (keine explizite Bestätigung - bitte prüfen)" }
         }
 
-        # Schritt 4: Kein Formular - nur GET war moeglich
-        return @{ method = "get"; message = "Seite aufgerufen, kein Abmelde-Formular gefunden - ggf. manuell pruefen" }
+        # Abmelde-Link auf der Seite suchen ("Hier klicken zum Abmelden" o.ä.)
+        $linkRx = '(?i)<a[^>]+href="(https?://[^"]+)"[^>]*>[^<]{0,80}(?:unsubscribe|abmeld|opt.?out|austragen|abbestell)[^<]{0,40}</a>'
+        if ($html -match $linkRx) {
+            try {
+                $linkUrl  = $Matches[1]
+                $linkResp = Invoke-WebRequest -Uri $linkUrl -Method GET -TimeoutSec 15 -UseBasicParsing -Headers $reqHdr
+                if ($linkResp.Content -match $confirmRx) {
+                    return @{ method = "link_click"; message = "Abmelde-Link geklickt - Seite bestätigt Abmeldung" }
+                }
+                return @{ method = "link_click"; message = "Abmelde-Link geklickt (Bestätigung unklar - bitte prüfen)" }
+            } catch {
+                Write-Log "  -> Abmelde-Link fehlgeschlagen: $_" "WARN"
+            }
+        }
+
+        return @{ method = "get"; message = "Seite aufgerufen, kein Abmelde-Formular/Link gefunden - bitte manuell prüfen" }
     } catch {
         return @{ method = "error"; message = "Fehler beim Aufrufen der Abmelde-Seite: $_" }
     }
@@ -409,17 +465,28 @@ function Execute-Entry {
     try {
         switch ($Entry.category) {
             'newsletter' {
-                if ($Entry.unsubscribe_header) {
+                # Neue Felder bevorzugen; Fallback für ältere Queue-Einträge
+                $unsub_http    = if ($Entry.unsubscribe_http)    { "$($Entry.unsubscribe_http)"   } else { "" }
+                $unsub_mailto  = if ($Entry.unsubscribe_mailto)  { "$($Entry.unsubscribe_mailto)" } else { "" }
+                $one_click     = [bool]$Entry.unsubscribe_one_click
+                if (-not $unsub_http -and -not $unsub_mailto -and $Entry.unsubscribe_header) {
                     $h = $Entry.unsubscribe_header
-                    if ($h -match '<mailto:([^>?]+)') {
-                        $addr = $Matches[1]; $subj = "unsubscribe"
-                        if ($h -match 'subject=([^&>]+)') { $subj = $Matches[1] }
-                        $m = $Outlook.CreateItem(0); $m.To = $addr; $m.Subject = $subj; $m.Body = "unsubscribe"; $m.Send()
-                        Write-Log "  -> Abmelde-Email gesendet an $addr"
-                    } elseif ($h -match '<(https?://[^>]+)>') {
-                        $result = Invoke-WebUnsubscribe $Matches[1]
-                        Write-Log "  -> Web-Abmeldung ($($result.method)): $($result.message)"
+                    if ($h -match '<mailto:([^>]+)>') { $unsub_mailto = $Matches[1] }
+                    if ($h -match '<(https?://[^>]+)>') { $unsub_http = $Matches[1] }
+                }
+
+                if ($unsub_http) {
+                    $result = Invoke-WebUnsubscribe -Url $unsub_http -OneClick $one_click
+                    Write-Log "  -> Web-Abmeldung ($($result.method)): $($result.message)"
+                } elseif ($unsub_mailto) {
+                    $parts = $unsub_mailto -split '\?', 2
+                    $addr  = $parts[0]
+                    $subj  = "unsubscribe"
+                    if ($parts.Count -gt 1 -and $parts[1] -match '(?i)subject=([^&]+)') {
+                        try { $subj = [Uri]::UnescapeDataString($Matches[1]) } catch { $subj = $Matches[1] }
                     }
+                    $m = $Outlook.CreateItem(0); $m.To = $addr; $m.Subject = $subj; $m.Body = "unsubscribe"; $m.Send()
+                    Write-Log "  -> Abmelde-Email gesendet an $addr (Betreff: $subj)"
                 }
             }
             'application' {
@@ -732,6 +799,7 @@ function Scan-Inbox {
                 category    = "task"
                 status      = "open_task"
                 proposed_action = "Manuelle Bearbeitung"
+                body_preview = if ($mail.Body) { $b = $mail.Body.Trim(); if ($b.Length -gt 2000) { $b.Substring(0,2000) + "…" } else { $b } } else { "" }
             }
             Add-To-Queue $taskEntry
             $processedKeys[$dedupKey] = $true
@@ -780,7 +848,7 @@ function Scan-Inbox {
 # Sicherstellen dass keine zweite Instanz läuft
 $myPid    = $PID
 $otherBot = Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.ProcessId -ne $myPid -and $_.CommandLine -like '*bot.ps1*' }
+    Where-Object { $_.ProcessId -ne $myPid -and $_.CommandLine -like '*-File*bot.ps1*' -and $_.CommandLine -notlike '*-NonInteractive*' -and $_.CommandLine -notlike '*-Command*' }
 if ($otherBot) {
     Write-Log "FEHLER: Bot läuft bereits (PID $($otherBot.ProcessId)). Diese Instanz wird beendet." "ERROR"
     exit 1

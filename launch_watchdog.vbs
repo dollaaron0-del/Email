@@ -1,0 +1,1 @@
+CreateObject("WScript.Shell").Run "powershell.exe -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File """ & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\watchdog.ps1""", 0, False
