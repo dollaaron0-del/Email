@@ -700,6 +700,8 @@ function Is-SuspiciousSpam {
 # ── Phishing/Schadsoftware-Erkennung ─────────────────────────────────
 $DangerousAttachmentExtensions = @('.exe','.scr','.bat','.cmd','.com','.pif','.vbs','.vbe','.js','.jse','.wsf','.wsh','.ps1','.psm1','.jar','.msi','.hta','.chm','.reg','.lnk','.iso','.img')
 $MacroAttachmentExtensions     = @('.docm','.xlsm','.pptm','.dotm','.xltm','.xlsb')
+$ArchiveAttachmentExtensions   = @('.zip','.rar','.7z','.arj','.gz','.tar')
+$PasswordHintPattern           = '(?i)(passwort|password|kennwort)'
 $PhishingKeywordPattern = '(?i)(konto.{0,20}(gesperrt|deaktiviert|eingeschränkt)|passwort.{0,20}(ändern|bestätigen|aktualisieren)|verify your (account|identity|password)|dringend(er)?.{0,15}handlungsbedarf|klicken sie (hier|sofort|jetzt)|unusual (login|activity)|verdächtige (anmeldung|aktivität)|zahlung.{0,20}überfällig|rechnung.{0,15}(überfällig|sofort)|IBAN.{0,20}(geändert|aktualisiert|angepasst)|bankdaten.{0,20}(bestätigen|aktualisieren)|suspend(ed)? your account|account.{0,15}(locked|suspended)|bestätigen sie (ihre|jetzt) (daten|identität|zugangsdaten)|innerhalb von 24 stunden|within 24 hours|letzte mahnung|paket.{0,15}(zoll|gebühr).{0,15}(bezahlen|zahlen)|beschwerde.{0,20}(gast|unterkunft|buchung|über ihr)|complaint.{0,15}(against|about).{0,20}(your|the).{0,10}(property|listing|account)|guest.{0,10}complaint|ihr (angebot|inserat|profil).{0,15}(gemeldet|gesperrt)|neue bewertung.{0,15}erhalten|verifizierung.{0,15}fehlgeschlagen|ich bin kein roboter|verify you are human|nicht.?automatisiert.{0,10}best[äa]tigen)'
 
 function Get-AttachmentRisk {
@@ -722,36 +724,91 @@ function Get-AttachmentRisk {
     return $hits
 }
 
+# Archiv-Anhang + Passwort-Hinweis im Text ist eine sehr bekannte Methode, um
+# Virenscanner (Windows Defender, VirusTotal) auszuhebeln, da niemand ohne das
+# Passwort in das Archiv hineinschauen kann -> gilt als hartes Indiz. Ein Archiv
+# ohne Passwort-Hinweis ist fuer sich allein nur ungewoehnlich (Inhalt laesst
+# sich zwar meist noch scannen, aber nicht garantiert) -> weiches Indiz.
+function Get-ArchiveRisk {
+    param($Item)
+    $hard = @(); $soft = @()
+    try {
+        $archiveNames = @()
+        foreach ($att in $Item.Attachments) {
+            $ext = [IO.Path]::GetExtension($att.FileName).ToLower()
+            if ($ext -in $ArchiveAttachmentExtensions) { $archiveNames += $att.FileName }
+        }
+        if ($archiveNames.Count -gt 0) {
+            $bodyText = "$($Item.Subject) $($Item.Body)"
+            if ($bodyText -match $PasswordHintPattern) {
+                $hard += "Archiv-Anhang ($($archiveNames -join ', ')) kombiniert mit Passwort-Hinweis im Text - klassische Methode, um Virenscanner zu umgehen"
+            } else {
+                $soft += "Archiv-Anhang ($($archiveNames -join ', ')) - Inhalt kann von Virenscannern nicht immer vollstaendig geprueft werden"
+            }
+        }
+    } catch {}
+    return @{ hard = $hard; soft = $soft }
+}
+
+# Rohe http(s)-Links auch im reinen Text-Koerper finden (nicht jede Phishing-Mail
+# ist HTML-formatiert - eine Text-Mail mit nackter URL sonst voellig unsichtbar).
+function Get-PlainTextLinks {
+    param($Item)
+    $links = @()
+    try {
+        $body = $Item.Body
+        if (-not $body) { return $links }
+        [regex]::Matches($body, '(?i)https?://[^\s<>"''\)]+') | ForEach-Object {
+            $links += $_.Value.TrimEnd('.', ',', ')', ']', '"')
+        }
+    } catch {}
+    return $links
+}
+
 function Get-LinkRisk {
     # Hart = eindeutiges technisches Indiz (IP-Link). Weich = Text/Ziel weichen ab,
     # kommt aber auch bei harmlosen Tracking-/Redirect-Links vor -> nur ein Verdacht.
     param($Item)
     $hard = @(); $soft = @()
+    $seen = @{}
     try {
         $html = $Item.HTMLBody
-        if (-not $html) { return @{ hard = $hard; soft = $soft } }
-        $linkMatches = [regex]::Matches($html, '(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
-        $seen = @{}
-        foreach ($m in $linkMatches) {
-            $href = $m.Groups[1].Value
-            $text = ($m.Groups[2].Value -replace '<[^>]+>','').Trim()
-            if ($href -notmatch '^https?://') { continue }
-            try { $hrefDomain = ([Uri]$href).Host.ToLower() } catch { continue }
+        if ($html) {
+            $linkMatches = [regex]::Matches($html, '(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
+            foreach ($m in $linkMatches) {
+                $href = $m.Groups[1].Value
+                $text = ($m.Groups[2].Value -replace '<[^>]+>','').Trim()
+                if ($href -notmatch '^https?://') { continue }
+                try { $hrefDomain = ([Uri]$href).Host.ToLower() } catch { continue }
 
-            # Link zeigt auf eine IP-Adresse statt auf eine Domain
-            if ($hrefDomain -match '^\d{1,3}(\.\d{1,3}){3}$' -and -not $seen.ContainsKey('ip')) {
-                $hard += "Link verweist auf IP-Adresse statt Domain: $hrefDomain"; $seen['ip'] = $true
-            }
+                # Link zeigt auf eine IP-Adresse statt auf eine Domain
+                if ($hrefDomain -match '^\d{1,3}(\.\d{1,3}){3}$' -and -not $seen.ContainsKey('ip')) {
+                    $hard += "Link verweist auf IP-Adresse statt Domain: $hrefDomain"; $seen['ip'] = $true
+                }
 
-            # Sichtbarer Linktext nennt eine Domain, die vom tatsaechlichen Link abweicht
-            if ($text -match '([a-z0-9\-]+\.)+[a-z]{2,}' -and -not $seen.ContainsKey('mismatch')) {
-                $textDomain = $Matches[0].ToLower()
-                if ($hrefDomain -notlike "*$textDomain*" -and $textDomain -notlike "*$hrefDomain*") {
-                    $soft += "Linktext '$text' verweist tatsaechlich auf: $hrefDomain"; $seen['mismatch'] = $true
+                # Sichtbarer Linktext nennt eine Domain, die vom tatsaechlichen Link abweicht
+                if ($text -match '([a-z0-9\-]+\.)+[a-z]{2,}' -and -not $seen.ContainsKey('mismatch')) {
+                    $textDomain = $Matches[0].ToLower()
+                    if ($hrefDomain -notlike "*$textDomain*" -and $textDomain -notlike "*$hrefDomain*") {
+                        $soft += "Linktext '$text' verweist tatsaechlich auf: $hrefDomain"; $seen['mismatch'] = $true
+                    }
                 }
             }
         }
     } catch {}
+
+    # Auch reine Text-Mails (kein HTML) auf IP-Adress-Links pruefen - unabhaengig
+    # vom Format ein hartes Indiz
+    try {
+        foreach ($url in (Get-PlainTextLinks $Item)) {
+            if ($seen.ContainsKey('ip')) { break }
+            try { $hostName = ([Uri]$url).Host } catch { continue }
+            if ($hostName -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                $hard += "Link verweist auf IP-Adresse statt Domain: $hostName"; $seen['ip'] = $true
+            }
+        }
+    } catch {}
+
     return @{ hard = $hard; soft = $soft }
 }
 
@@ -794,16 +851,20 @@ function Get-SpoofRisk {
 function Get-UniqueLinks {
     param($Item)
     $links = @()
+    $seen = @{}
     try {
         $html = $Item.HTMLBody
-        if (-not $html) { return $links }
-        $linkMatches = [regex]::Matches($html, '(?is)href="(https?://[^"]+)"')
-        $seen = @{}
-        foreach ($m in $linkMatches) {
-            $href = $m.Groups[1].Value
-            if (-not $seen.ContainsKey($href)) { $seen[$href] = $true; $links += $href }
+        if ($html) {
+            [regex]::Matches($html, '(?is)href="(https?://[^"]+)"') | ForEach-Object {
+                $href = $_.Groups[1].Value
+                if (-not $seen.ContainsKey($href)) { $seen[$href] = $true; $links += $href }
+            }
         }
     } catch {}
+    # Auch reine Text-Mails (kein HTML) beruecksichtigen
+    foreach ($url in (Get-PlainTextLinks $Item)) {
+        if (-not $seen.ContainsKey($url)) { $seen[$url] = $true; $links += $url }
+    }
     return $links
 }
 
@@ -874,6 +935,9 @@ function Test-PhishingRisk {
     param($Item, $Config)
     $hard = @(); $soft = @()
     $hard += Get-AttachmentRisk $Item
+    $archiveRisk = Get-ArchiveRisk $Item
+    $hard += $archiveRisk.hard
+    $soft += $archiveRisk.soft
     $linkRisk = Get-LinkRisk $Item
     $hard += $linkRisk.hard
     $soft += $linkRisk.soft

@@ -88,10 +88,19 @@ verdächtige Merkmale geprüft. Es gibt zwei Warnstufen:
   - Gefährliche Anhangstypen (.exe, .scr, .vbs, .js, .lnk, ...) und
     makrofähige Office-Dokumente (.docm, .xlsm, ...)
   - Verschleierte doppelte Dateiendungen (z.B. "rechnung.pdf.exe")
-  - Links auf reine IP-Adressen statt auf eine Domain
+  - Archiv-Anhang (.zip/.rar/.7z) KOMBINIERT mit einem Passwort-Hinweis im Text
+    ("Passwort: ...") — klassische Methode, um Virenscanner zu umgehen, da
+    niemand ohne Passwort in das Archiv hineinschauen kann
+  - Links auf reine IP-Adressen statt auf eine Domain (auch in reinen
+    Text-Mails ohne HTML-Formatierung)
   - Absendernamen, die eine bekannte Marke nennen, aber von einer
     abweichenden Domain kommen
   - Positive Treffer bei Windows Defender, VirusTotal oder URLhaus
+
+  Wichtig: Absender-Marken-Erkennung (z.B. Booking.com) ist bewusst auf
+  "hart" gestellt statt entschärft — auch wenn das gelegentlich eine echte
+  Buchungsmail fälschlich in Quarantäne schickt, ist das laut Priorität
+  lieber ein Fehlalarm zu viel als eine echte Warnung zu wenig.
 
   Diese E-Mails werden NIEMALS automatisch gelöscht oder weitergeleitet,
   sondern sofort in EmailProcessor/Sicherheitswarnung verschoben und rot
@@ -104,6 +113,9 @@ verdächtige Merkmale geprüft. Es gibt zwei Warnstufen:
   - Nur eine verdächtige Formulierung (z.B. "dringend", "Beschwerde") ohne
     weitere Auffälligkeit
   - Linktext nennt eine Domain, die vom tatsächlichen Linkziel abweicht
+  - Archiv-Anhang (.zip/.rar/.7z) OHNE Passwort-Hinweis — an sich nicht
+    gefährlich, aber der Inhalt kann von Virenscannern nicht immer
+    vollständig geprüft werden
 
   Diese Signale reichen allein nicht als Beweis (z.B. könnte es eine echte
   dringende Gästeanfrage sein). Die E-Mail wird deshalb ganz normal weiter
@@ -151,6 +163,29 @@ dem Klick abfangen. Als zusätzlicher Schutz gilt für alle im Team:
   → NIEMALS Text von einer Webseite in "Ausführen" (Win+R), PowerShell
     oder die Eingabeaufforderung einfügen — das verlangt kein echtes
     CAPTCHA oder keine echte Verifizierung, das ist immer Schadsoftware.
+
+BEKANNTE VERBLEIBENDE GRENZEN
+------------------------------
+Damit klar ist, wo auch die aktuelle, bewusst strenge Filterung an ihre
+Grenzen stößt:
+  - Der Bot prüft E-Mails nur beim periodischen Scan (Prüfintervall, siehe
+    Konfiguration), nicht in dem Moment, in dem die Mail ankommt. In diesem
+    kurzen Zeitfenster liegt eine neue Mail ungeprüft im normalen
+    Posteingang. Ein kürzeres Prüfintervall (Standard jetzt: 2 Minuten,
+    einstellbar im Dashboard bis auf 1 Minute) verkleinert dieses Fenster,
+    schließt es aber nicht vollständig. Eine echte Sofort-Prüfung beim
+    Email-Eingang wäre nur mit einem größeren Umbau (Outlook-Ereignis statt
+    Zeitintervall) möglich.
+  - VirusTotal erkennt nur bereits bekannte Schadsoftware (Hash-Abgleich).
+    Eine brandneue, noch nie gesehene Schaddatei erzeugt keinen Treffer.
+  - Die Formulierungs- und Link-Text-Erkennung basiert auf Textmustern und
+    lässt sich mit ausreichend Aufwand (Sonderzeichen, kaputtes HTML)
+    umgehen.
+  - Es wird nicht geprüft, ob der Absender die tatsächlichen
+    E-Mail-Authentifizierungsergebnisse (SPF/DKIM/DMARC) besteht — die
+    Marken-/Spoofing-Erkennung basiert nur auf Anzeigename und Domain-Text.
+  - Das Dashboard hat aus Einfachheitsgründen keine Anmeldung (nur
+    localhost). Der VirusTotal-API-Key liegt im Klartext in config.json.
 
 
 LOGDATEI

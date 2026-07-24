@@ -8,7 +8,7 @@
   ],
   "applications_email": "karriere@beispiel.com",
   "ollama_model": "llama3.2",
-  "check_interval_minutes": 5,
+  "check_interval_minutes": 2,
   "scan_max_age_days": 2,
   "skip_domains": [
     "ihre-firma.com"
