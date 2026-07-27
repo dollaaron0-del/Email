@@ -106,7 +106,7 @@ while ($true) {
             "/api/logs" {
                 $f = Join-Path $scriptDir "email_processor.log"
                 $lines = if (Test-Path $f) { @(Get-Content $f -Tail 40 -Encoding UTF8 -ErrorAction SilentlyContinue) } else { @() }
-                Send-Text $ctx ($lines | ConvertTo-Json) "application/json; charset=utf-8"
+                Send-Text $ctx (ConvertTo-Json -InputObject $lines) "application/json; charset=utf-8"
             }
 
             "/api/queue" {
