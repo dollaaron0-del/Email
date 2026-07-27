@@ -6,13 +6,15 @@ VORAUSSETZUNGEN
 ---------------
 - Microsoft Outlook ist installiert und eingeloggt (Microsoft 365)
 - Ollama ist installiert und läuft (llama3.2 Modell geladen)
-- Python ist installiert (https://www.python.org/downloads/)
-  → Bei Installation "Add Python to PATH" anhaken!
+- Windows PowerShell (bereits in Windows enthalten, keine Zusatzinstallation
+  nötig) — Python wird NICHT benötigt.
 
 
-SCHRITT 1: Hotels und E-Mail-Adressen eintragen (config.yaml)
---------------------------------------------------------------
-Öffne config.yaml (z.B. mit Notepad) und trage ein:
+SCHRITT 1: Konfiguration anlegen (config.json)
+------------------------------------------------
+Falls noch nicht vorhanden: config.example.json kopieren und in config.json
+umbenennen (im selben Ordner wie bot.ps1). Dann config.json öffnen
+(z.B. mit Notepad) und eintragen:
 
 a) Für jedes Hotel:
    - name: Exakter Hotelname
@@ -20,30 +22,33 @@ a) Für jedes Hotel:
    - keywords: Begriffe, die im E-Mail-Text auf dieses Hotel hinweisen
 
    Beispiel:
-     - name: "Stadthotel München"
-       email: "info@stadthotel-muenchen.de"
-       keywords: ["stadthotel münchen", "münchen", "stadthotel"]
+     { "name": "Stadthotel München", "email": "info@stadthotel-muenchen.de",
+       "keywords": ["stadthotel münchen", "münchen", "stadthotel"] }
 
 b) Bewerbungs-Weiterleitungsadresse:
-   applications_email: "hr@deine-firma.de"
+   "applications_email": "hr@deine-firma.de"
+
+Alternativ: alles bequem über das Dashboard unter Konfiguration einstellen
+(siehe Schritt 2), dann muss config.json nicht manuell bearbeitet werden.
 
 
-SCHRITT 2: Installation
-------------------------
-Doppelklick auf: install.bat
-→ Installiert alle benötigten Python-Pakete
-
-
-SCHRITT 3: Programm starten
+SCHRITT 2: Programm starten
 -----------------------------
 1. Ollama starten (läuft dann im Hintergrund)
 2. Outlook öffnen und eingeloggt lassen
-3. Doppelklick auf: start.bat
-→ Das Programm läuft im Hintergrund und prüft alle 5 Minuten
-  neue E-Mails im Posteingang
+3. Doppelklick auf: start_all.bat
+   (NICHT "start.bat" — diese Datei gibt es nicht, der richtige Name ist
+   start_all.bat)
+→ Startet Bot und Dashboard und öffnet automatisch http://localhost:5000
+   im Browser. Der Bot läuft im Hintergrund und prüft neue E-Mails praktisch
+   sofort (Echtzeit-Ereignis) sowie zusätzlich alle paar Minuten als
+   Sicherheitsnetz.
+
+Falls nur das Dashboard neu gestartet werden soll (Bot läuft schon):
+Doppelklick auf start_dashboard.bat.
 
 
-SCHRITT 4: Autostart einrichten
+SCHRITT 3: Autostart einrichten
 ---------------------------------
 Damit das Programm automatisch mit Windows startet:
 
@@ -53,7 +58,7 @@ Damit das Programm automatisch mit Windows startet:
 4. Trigger: "Beim Anmelden"
 5. Aktion: "Programm starten"
 6. Programm/Skript:
-   C:\Users\Werkstudentfibu\email_processor\start.bat
+   C:\Pfad\zu\deinem\Ordner\start_all.bat
 7. Fertigstellen
 
 Hinweis: Outlook und Ollama müssen beim PC-Start automatisch starten.
@@ -191,7 +196,8 @@ Grenzen stößt:
 LOGDATEI
 ---------
 Alle Aktionen werden protokolliert in:
-  email_processor\email_processor.log
+  email_processor.log
+(liegt im selben Ordner wie bot.ps1)
 
 
 HÄUFIGE PROBLEME
@@ -202,13 +208,15 @@ HÄUFIGE PROBLEME
 
 "Modell nicht gefunden"
   → Im Terminal prüfen: ollama list
-  → In config.yaml den Modellnamen anpassen (ollama_model)
+  → In config.json den Modellnamen anpassen (ollama_model), z.B. über das
+    Dashboard unter Konfiguration
 
 "Outlook nicht gefunden"
-  → Outlook öffnen, dann start.bat erneut starten
+  → Outlook öffnen, dann start_all.bat erneut starten
 
 "Hotel nicht erkannt" → E-Mail landet in Buchung-Unbekannt
-  → In config.yaml mehr keywords für das Hotel eintragen
+  → In config.json (bzw. im Dashboard unter Konfiguration) mehr keywords
+    für das Hotel eintragen
   → E-Mail manuell an das Hotel weiterleiten
 
 "Abmeldung nicht möglich" → E-Mail landet in Newsletter-Manuell
