@@ -3,6 +3,10 @@ queue.json
 corrections.json
 stats.json
 email_processor.log
+watchdog.log
+
+# Gesammelte Trainingsdaten (enthalten Mailtexte - niemals einchecken!)
+training_data/
 
 # Echte Konfiguration (enthält Hotel-Email-Adressen)
 config.json

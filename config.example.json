@@ -14,6 +14,26 @@
     "ihre-firma.com"
   ],
   "skip_senders": [],
+  "llm_provider": "langdock",
+  "langdock": {
+    "model": "gpt-5-mini",
+    "agent_id": "",
+    "region": "eu",
+    "api_key_env": "LANGDOCK_API_KEY",
+    "fallback_to_ollama": true,
+    "body_chars": 3000
+  },
+  "auto_approve": {
+    "mode": "shadow",
+    "min_confidence": "high",
+    "categories": ["advertisement", "newsletter", "application", "booking"]
+  },
+  "training_data": {
+    "enabled": true,
+    "dir": "training_data",
+    "body_chars": 4000,
+    "compare_ollama": false
+  },
   "reply_templates": {
     "de": "Sehr geehrte Damen und Herren,\n\nvielen Dank für Ihre Anfrage.\n\nKönnten Sie mir bitte mitteilen, in welchem Hotel Sie gerne eine Reservierung vornehmen möchten?\n\nIch freue mich auf Ihre Rückmeldung.\n\nMit freundlichen Grüßen\nIhr Name",
     "en": "Dear Sir or Madam,\n\nThank you for your inquiry.\n\nCould you please let me know at which hotel you would like to make a reservation?\n\nI look forward to your reply.\n\nKind regards,\nYour Name",

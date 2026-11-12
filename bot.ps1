@@ -7,6 +7,9 @@ $correctionsFile = Join-Path $scriptDir "corrections.json"
 # Bot-Prozess auf hohe Priorität setzen
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
 
+# Langdock-Anbindung (API-Aufruf, Prompt, Antwort-Pruefung)
+. (Join-Path $scriptDir "langdock.ps1")
+
 # ── Logging ──────────────────────────────────────────────────────────
 $logFile = Join-Path $scriptDir "email_processor.log"
 function Write-Log {
@@ -99,11 +102,12 @@ function Find-Hotel {
     $null
 }
 
-# ── Ollama ────────────────────────────────────────────────────────────
-function Classify-Email {
-    param($Item, $Config)
-    $hotels = ($Config.hotels | ForEach-Object { "  - $($_.name) (Keywords: $($_.keywords -join ', '))" }) -join "`n"
+function Get-HotelsBlock {
+    param($Config)
+    return ($Config.hotels | ForEach-Object { "  - $($_.name) (Keywords: $($_.keywords -join ', '))" }) -join "`n"
+}
 
+function Get-ExamplesBlock {
     # Korrekturen dedupliziert laden: max. 2 Beispiele pro Muster (wrong->correct), bis zu 15 gesamt
     $allCorrections = @(Load-Corrections)
     $seen = @{}
@@ -122,6 +126,206 @@ function Classify-Email {
         }
         $examplesBlock = "`nLernbeispiele (HOHE PRIORITAET - diese Muster wurden korrigiert):`n" + ($lines -join "`n") + "`n"
     }
+    return $examplesBlock
+}
+
+function Get-AttachmentNames {
+    param($Item)
+    $names = @()
+    try { foreach ($a in $Item.Attachments) { $names += "$($a.FileName)" } } catch {}
+    return $names   # Aufrufer immer mit @(...) umschliessen
+}
+
+function Get-InternetMessageId {
+    # Stabile Kennung der Mail (bleibt beim Verschieben gleich, gibt es auch in Microsoft Graph)
+    param($Item)
+    try { return "$($Item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x1035001F'))" } catch { return "" }
+}
+
+# ── Langdock: eine Abfrage pro Mail ──────────────────────────────────
+function Get-LlmProvider {
+    param($Config)
+    if ("$($Config.llm_provider)".ToLower() -eq 'langdock') { return 'langdock' }
+    return 'ollama'
+}
+
+function Invoke-LangdockAnalysis {
+    # Liefert Kategorie, Hotel, Sicherheit, Sprache und Phishing-Einschaetzung - wirft bei Fehlern
+    param($Item, $Config)
+    $maxChars = if ($Config.langdock.body_chars) { [int]$Config.langdock.body_chars } else { 3000 }
+    $bodyText = "$($Item.Body)".Trim()
+    if ($bodyText.Length -gt $maxChars) { $bodyText = $bodyText.Substring(0, $maxChars) }
+    $att = @(Get-AttachmentNames $Item)
+
+    $prompt = Get-AnalysisPrompt -HotelsBlock (Get-HotelsBlock $Config) -ExamplesBlock (Get-ExamplesBlock) `
+        -SenderName "$($Item.SenderName)" -SenderEmail "$($Item.SenderEmailAddress)" -Subject "$($Item.Subject)" `
+        -Attachments $(if ($att.Count) { $att -join ', ' } else { 'keine' }) -BodyText $bodyText
+
+    $raw    = Invoke-LangdockJson -Prompt $prompt -Schema (Get-AnalysisSchema) -Config $Config
+    $result = ConvertTo-AnalysisResult $raw $Config
+    Write-Log "  -> Langdock: $($result.category) | Hotel: $($result.hotel) | $($result.confidence) | $($result.reason)"
+    if ($result.is_phishing) { Write-Log "  -> Langdock Phishing-Verdacht ($($result.phishing_confidence)): $($result.phishing_reason)" "WARN" }
+    return $result
+}
+
+function Merge-LlmPhishing {
+    # Uebernimmt die Phishing-Einschaetzung aus der Langdock-Analyse in das Ergebnis der Sicherheitspruefung
+    param($SecCheck, $Analysis)
+    if ($Analysis -and $Analysis.is_phishing) {
+        $SecCheck.reasons += "LLM-Phishing-Erkennung ($($Analysis.phishing_confidence)): $($Analysis.phishing_reason)"
+        if ($Analysis.phishing_confidence -in @('high','medium')) { $SecCheck.threat_level = 'danger' }
+        elseif ($SecCheck.threat_level -eq 'none') { $SecCheck.threat_level = 'warn' }
+        $SecCheck.is_threat = ($SecCheck.threat_level -ne 'none')
+    }
+    return $SecCheck
+}
+
+# ── Automatische Freigabe ────────────────────────────────────────────
+$CONF_RANK = @{ low = 1; medium = 2; high = 3 }
+
+function Get-AutoApproveMode {
+    param($Config)
+    $m = "$($Config.auto_approve.mode)".ToLower()
+    if ($m -in @('shadow','on')) { return $m }
+    return 'off'
+}
+
+function Get-AutoDecision {
+    # Darf dieser Eintrag ohne manuelle Pruefung ausgefuehrt werden? Liefert eligible + Begruendung.
+    param($Entry, $Prediction, $Config)
+    if ((Get-AutoApproveMode $Config) -eq 'off') { return @{ eligible = $false; note = "" } }
+
+    $allowed = if ($Config.auto_approve.categories) { @($Config.auto_approve.categories) } else { @('advertisement','newsletter','application','booking') }
+    $minConf = "$($Config.auto_approve.min_confidence)".ToLower()
+    if ($minConf -notin @('high','medium')) { $minConf = 'high' }
+    $cat  = "$($Entry.category)"
+    $conf = if ($Prediction) { "$($Prediction.confidence)".ToLower() } else { "" }
+
+    if ($Config.test_mode)        { return @{ eligible = $false; note = "Test-Modus aktiv" } }
+    if (-not $Prediction)         { return @{ eligible = $false; note = "keine KI-Einschaetzung" } }
+    if ($Prediction.provider -ne 'langdock' -and -not $Config.auto_approve.allow_ollama) {
+                                    return @{ eligible = $false; note = "nur Langdock-Ergebnisse werden automatisch freigegeben" } }
+    if ($Entry.is_corrected)      { return @{ eligible = $false; note = "korrigierter Eintrag" } }
+    # Diese Faelle bleiben immer manuell, egal was in der Config steht
+    if ($cat -in @('sonstiges','unknown','security_threat','task')) { return @{ eligible = $false; note = "Kategorie wird immer manuell geprueft" } }
+    if ($cat -notin $allowed)     { return @{ eligible = $false; note = "Kategorie nicht fuer Auto-Freigabe freigeschaltet" } }
+    if ($Entry.security_status -ne 'clean') { return @{ eligible = $false; note = "Sicherheitspruefung nicht bestanden" } }
+    if (-not ($CONF_RANK[$conf] -ge $CONF_RANK[$minConf])) { return @{ eligible = $false; note = "Sicherheit nur '$conf'" } }
+
+    switch ($cat) {
+        'booking' {
+            if ($Entry.action_type -ne 'forward' -or -not $Entry.target_email) {
+                return @{ eligible = $false; note = "Rueckfrage an Gast wird immer manuell geprueft" }
+            }
+        }
+        'newsletter' {
+            if (-not $Entry.unsubscribe_one_click) {
+                return @{ eligible = $false; note = "Abmeldung ohne One-Click wird manuell geprueft" }
+            }
+        }
+        'application' {
+            if (-not $Entry.target_email) { return @{ eligible = $false; note = "keine Bewerbungs-Adresse konfiguriert" } }
+        }
+    }
+    return @{ eligible = $true; note = "Sicherheit '$conf'" }
+}
+
+function Set-AutoDecision {
+    # Schreibt die Entscheidung in den Queue-Eintrag. Modus "on": sofort genehmigen, "shadow": nur markieren.
+    param($Entry, $Prediction, $Config)
+    $mode = Get-AutoApproveMode $Config
+    $d = Get-AutoDecision $Entry $Prediction $Config
+    $Entry.auto_mode     = $mode
+    $Entry.auto_eligible = [bool]$d.eligible
+    $Entry.auto_note     = $d.note
+    $Entry.auto_approved = $false
+    if ($mode -eq 'on' -and $d.eligible) {
+        $Entry.status        = 'approved'
+        $Entry.auto_approved = $true
+    }
+}
+
+# ── Trainingsdaten ────────────────────────────────────────────────────
+# Eine Zeile pro Ereignis in training_data/emails_JJJJ-MM.jsonl:
+#   "prediction" = was die KI vorgeschlagen hat (inkl. Mailtext)
+#   "decision"   = was danach passiert ist (genehmigt, korrigiert, abgelehnt, ignoriert, automatisch)
+# Zusammenfuehren mit export_training_data.ps1 (Verknuepfung ueber "id").
+function Test-TrainingEnabled {
+    param($Config)
+    return ($Config.training_data -and $Config.training_data.enabled -eq $true)
+}
+
+function Write-TrainingEvent {
+    param($Config, $Record)
+    if (-not (Test-TrainingEnabled $Config)) { return }
+    try {
+        $dir = if ($Config.training_data.dir) { "$($Config.training_data.dir)" } else { "training_data" }
+        if (-not [IO.Path]::IsPathRooted($dir)) { $dir = Join-Path $scriptDir $dir }
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $file = Join-Path $dir ("emails_" + (Get-Date -Format "yyyy-MM") + ".jsonl")
+        $line = ConvertTo-Json -InputObject $Record -Depth 8 -Compress
+        [IO.File]::AppendAllText($file, $line + "`n", (New-Object Text.UTF8Encoding($false)))
+    } catch { Write-Log "  -> Trainingsdaten konnten nicht geschrieben werden: $_" "WARN" }
+}
+
+function Get-TrainingInput {
+    # Alles, was ein Modell spaeter als Eingabe sehen soll - VOR dem Verschieben erfassen
+    param($Item, $Config, [string]$MessageId)
+    $maxChars = if ($Config.training_data.body_chars) { [int]$Config.training_data.body_chars } else { 4000 }
+    $body = "$($Item.Body)".Trim()
+    if ($body.Length -gt $maxChars) { $body = $body.Substring(0, $maxChars) }
+    $sender = "$($Item.SenderEmailAddress)".ToLower()
+    $u = Get-UnsubscribeInfo $Item
+    return [ordered]@{
+        message_id            = $MessageId
+        received              = $Item.ReceivedTime.ToString("yyyy-MM-ddTHH:mm:ss")
+        sender_domain         = if ($sender -match '@(.+)$') { $Matches[1] } else { "" }
+        subject               = "$($Item.Subject)"
+        body                  = $body
+        attachments           = @(Get-AttachmentNames $Item)
+        has_list_unsubscribe  = [bool]$u.raw
+        one_click_unsubscribe = [bool]$u.one_click
+    }
+}
+
+function Write-TrainingPrediction {
+    param($Config, $Entry, $TrainInput, $Prediction, $Extra)
+    if (-not $TrainInput) { return }
+    Write-TrainingEvent $Config ([ordered]@{
+        event           = "prediction"
+        id              = $Entry.id
+        time            = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        prompt_version  = $LANGDOCK_PROMPT_VERSION
+        input           = $TrainInput
+        prediction      = $Prediction
+        queued_category = $Entry.category
+        queued_hotel    = $Entry.hotel
+        proposed_action = $Entry.proposed_action
+        auto            = [ordered]@{ mode = $Entry.auto_mode; eligible = [bool]$Entry.auto_eligible; approved = [bool]$Entry.auto_approved; note = $Entry.auto_note }
+        extra           = $Extra
+    })
+}
+
+function Write-TrainingDecision {
+    param($Config, $Entry, [string]$Decision, [string]$FinalCategory, [string]$FinalHotel, [string]$Result = "")
+    Write-TrainingEvent $Config ([ordered]@{
+        event          = "decision"
+        id             = $Entry.id
+        message_id     = $Entry.message_id
+        time           = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        decision       = $Decision
+        final_category = $FinalCategory
+        final_hotel    = $FinalHotel
+        was_corrected  = [bool]$Entry.is_corrected
+        result         = $Result
+    })
+}
+
+# ── Ollama ────────────────────────────────────────────────────────────
+function Classify-Email {
+    param($Item, $Config)
+    $hotels = Get-HotelsBlock $Config
+    $examplesBlock = Get-ExamplesBlock
 
     function Invoke-Classify($bodyText) {
         $prompt = @"
@@ -163,7 +367,7 @@ Antworte NUR mit JSON: {"category":"...","hotel_name":null,"confidence":"high","
         $cat = $r.category
         if ($cat -notin @('newsletter','application','advertisement','booking','sonstiges','unknown')) { $cat = 'unknown' }
         Write-Log "  -> $cat | Hotel: $($r.hotel_name) | $($r.confidence) | $($r.reason)"
-        return @{ category = $cat; hotel = "$($r.hotel_name)" }
+        return @{ category = $cat; hotel = "$($r.hotel_name)"; confidence = "$($r.confidence)".ToLower(); reason = "$($r.reason)" }
     } catch {
         Write-Log "  -> Erster Versuch fehlgeschlagen, retry mit laengerem Text..." "WARN"
         try {
@@ -172,10 +376,10 @@ Antworte NUR mit JSON: {"category":"...","hotel_name":null,"confidence":"high","
             $cat = $r.category
             if ($cat -notin @('newsletter','application','advertisement','booking','sonstiges','unknown')) { $cat = 'unknown' }
             Write-Log "  -> $cat | Hotel: $($r.hotel_name) | $($r.confidence) | $($r.reason)"
-            return @{ category = $cat; hotel = "$($r.hotel_name)" }
+            return @{ category = $cat; hotel = "$($r.hotel_name)"; confidence = "$($r.confidence)".ToLower(); reason = "$($r.reason)" }
         } catch {
             Write-Log "  -> Klassifizierungsfehler: $_" "ERROR"
-            return @{ category = 'unknown'; hotel = $null }
+            return @{ category = 'unknown'; hotel = $null; confidence = 'low'; reason = "Klassifizierungsfehler" }
         }
     }
 }
@@ -203,14 +407,20 @@ function Detect-Language {
 }
 
 function Generate-Rueckfrage {
-    param($Item, $Config)
+    param($Item, $Config, [string]$Language = "")
 
-    # 1. Sprache erkennen
-    $lang = Detect-Language $Item $Config
+    $templates = $Config.reply_templates
+
+    # 1. Sprache: aus der Langdock-Analyse uebernehmen, sonst per Ollama erkennen
+    if ($Language) {
+        $lang = $Language
+        if (-not ($templates -and $templates.$lang)) { $lang = if ($templates -and $templates.en) { 'en' } else { 'de' } }
+    } else {
+        $lang = Detect-Language $Item $Config
+    }
     Write-Log "  -> Sprache erkannt: $lang"
 
     # 2. Passendes Template aus Config laden
-    $templates = $Config.reply_templates
     $template  = if ($templates -and $templates.$lang) { "$($templates.$lang)" } `
                  elseif ($templates -and $templates.de)  { "$($templates.de)" } `
                  else { "Sehr geehrte Damen und Herren,`n`nfuer welches Hotel gilt Ihre Anfrage?`n`n{hotels}`n`nMit freundlichen Gruessen" }
@@ -268,7 +478,7 @@ function Add-To-Queue {
 }
 
 function Build-QueueEntry {
-    param($Item, [string]$Category, [string]$Hotel, $Config)
+    param($Item, [string]$Category, [string]$Hotel, $Config, [string]$Language = "")
 
     $entry = [ordered]@{
         id          = [System.Guid]::NewGuid().ToString()
@@ -331,7 +541,7 @@ function Build-QueueEntry {
                 $entry.hotel           = $h.name
             } else {
                 Write-Log "  -> Hotel unklar, generiere Rueckfrage-Entwurf..."
-                $draft = Generate-Rueckfrage $Item $Config
+                $draft = Generate-Rueckfrage $Item $Config $Language
                 $entry.proposed_action = "Rueckfrage an Gast senden (Hotel nicht erkennbar)"
                 $entry.action_type     = "reply"
                 $entry.reply_draft     = $draft
@@ -606,14 +816,17 @@ function Process-Queue {
 
     foreach ($entry in $q) {
         if ($entry.status -eq "approved") {
-            Write-Log "Genehmigt - fuehre aus: `"$($entry.subject)`""
+            $how = if ($entry.auto_approved) { "Automatisch freigegeben" } else { "Genehmigt" }
+            Write-Log "$how - fuehre aus: `"$($entry.subject)`""
             $result = Execute-Entry $entry $Namespace $Inbox $Outlook
             $entry.status = $result
             $changed = $true
             Record-Email $entry $result
+            Write-TrainingDecision $Config $entry $(if ($entry.auto_approved) { 'auto_approved' } else { 'approved' }) $entry.category $entry.hotel $result
         }
         elseif ($entry.status -eq "ignored") {
             Write-Log "Ignoriert: `"$($entry.subject)`""
+            Write-TrainingDecision $Config $entry 'ignored' '' ''
             try {
                 $item = $Namespace.GetItemFromID($entry.entry_id)
                 [void]$item.Move((Resolve-Folder $Inbox "EmailProcessor/Ignoriert"))
@@ -630,6 +843,7 @@ function Process-Queue {
                 # Korrektur vorhanden: Eintrag aktualisieren und erneut zur Pruefung stellen
                 Write-Log "  -> Korrektur: $($entry.correct_category)$(if($entry.correct_hotel){" | $($entry.correct_hotel)"})"
                 Save-Correction $entry
+                Write-TrainingDecision $Config $entry 'corrected' $entry.correct_category $entry.correct_hotel
                 $corrEntry = Build-CorrectedEntry $entry $Config
                 $entry | Add-Member -NotePropertyName category        -NotePropertyValue $corrEntry.category        -Force
                 $entry | Add-Member -NotePropertyName hotel           -NotePropertyValue $corrEntry.hotel           -Force
@@ -640,6 +854,10 @@ function Process-Queue {
                 $entry | Add-Member -NotePropertyName reply_to        -NotePropertyValue $corrEntry.reply_to        -Force
                 $entry | Add-Member -NotePropertyName reply_draft     -NotePropertyValue $corrEntry.reply_draft     -Force
                 $entry | Add-Member -NotePropertyName is_corrected    -NotePropertyValue $true                      -Force
+                # Korrigierte Eintraege nie automatisch freigeben
+                $entry | Add-Member -NotePropertyName auto_eligible   -NotePropertyValue $false                     -Force
+                $entry | Add-Member -NotePropertyName auto_approved   -NotePropertyValue $false                     -Force
+                $entry | Add-Member -NotePropertyName auto_note       -NotePropertyValue "korrigierter Eintrag"     -Force
                 $entry | Add-Member -NotePropertyName correct_category -NotePropertyValue $null -Force
                 $entry | Add-Member -NotePropertyName correct_hotel    -NotePropertyValue $null -Force
                 $entry | Add-Member -NotePropertyName rejection_reason -NotePropertyValue $null -Force
@@ -647,6 +865,7 @@ function Process-Queue {
                 Write-Log "  -> Zurueck in Warteschlange fuer erneute Genehmigung"
             } else {
                 # Keine Korrektur - einfach archivieren
+                Write-TrainingDecision $Config $entry 'rejected' '' ''
                 try {
                     $item = $Namespace.GetItemFromID($entry.entry_id)
                     [void]$item.Move((Resolve-Folder $Inbox "EmailProcessor/Abgelehnt"))
@@ -699,7 +918,7 @@ function Record-Email {
     $rec = @{ time=(Get-Date -Format "dd.MM. HH:mm"); subject=$Entry.subject;
               sender=$Entry.sender_name; category=$Entry.category;
               hotel=$Entry.hotel; folder=$Entry.target_folder;
-              corrected=([bool]$Entry.is_corrected) }
+              corrected=([bool]$Entry.is_corrected); auto=([bool]$Entry.auto_approved) }
     $s.recent = @($rec) + $s.recent | Select-Object -First 100
     Save-Stats $s
 }
@@ -726,7 +945,8 @@ function Is-SuspiciousSpam {
 
 # ── Sicherheitsprüfung: Anhänge + Links + Phishing ───────────────────
 function Test-EmailSecurity {
-    param($Item, $Config)
+    # -RulesOnly: nur Anhang-/Link-Regeln, ohne Ollama (bei Langdock kommt die Phishing-Einschaetzung aus der Analyse)
+    param($Item, $Config, [switch]$RulesOnly)
     $reasons = @()
     $threatLevel = 'none'
 
@@ -767,7 +987,7 @@ function Test-EmailSecurity {
     }
 
     # 3. LLM-Phishing-Analyse (nur wenn kein 'danger' durch Regeln und Ollama konfiguriert)
-    if ($threatLevel -ne 'danger' -and $Config.ollama_model) {
+    if (-not $RulesOnly -and $threatLevel -ne 'danger' -and $Config.ollama_model) {
         try {
             $snippet = if ($body.Length -gt 500) { $body.Substring(0,500) } else { $body }
             $prompt = "Analysiere diese E-Mail auf Phishing, Betrug oder Schadsoftware. Antworte NUR mit JSON.`n`nBetreff: $($Item.Subject)`nAbsender: $($Item.SenderEmailAddress)`nInhalt: $snippet`n`nFormat: {`"is_phishing`": false, `"confidence`": `"low`", `"reason`": `"`"}"
@@ -848,6 +1068,9 @@ function Scan-Inbox {
     Write-Log "$($mails.Count) neue E-Mail(s) - werden zur Pruefung eingereiht"
     Write-Log ("=" * 55)
 
+    $useLangdock    = (Get-LlmProvider $Config) -eq 'langdock'
+    $ollamaFallback = if ($Config.langdock -and $null -ne $Config.langdock.fallback_to_ollama) { [bool]$Config.langdock.fallback_to_ollama } else { $true }
+
     $i = 0
     $processedKeys = @{}  # Duplikat-Schutz: Absender+Betreff innerhalb dieses Scans
 
@@ -884,8 +1107,37 @@ function Scan-Inbox {
             continue
         }
 
+        # Ausstehende Genehmigungen VOR dem KI-Aufruf verarbeiten
+        # (damit genehmigte Emails nicht durch laufende Klassifizierung blockiert werden)
+        Process-Queue $Namespace $Inbox $Outlook $Config
+
+        # Stabile Kennung + Trainingsdaten VOR dem Verschieben erfassen
+        $messageId  = Get-InternetMessageId $mail
+        $trainInput = if (Test-TrainingEnabled $Config) { Get-TrainingInput $mail $Config $messageId } else { $null }
+        $prediction = $null
+        $extra      = [ordered]@{}
+
         # Sicherheitsprüfung: Schadsoftware, Phishing, gefährliche Anhänge
-        $secCheck = Test-EmailSecurity $mail $Config
+        # Bei Langdock: erst die Regeln, dann EINE Langdock-Abfrage (liefert auch die Phishing-Einschaetzung)
+        $secCheck = Test-EmailSecurity $mail $Config -RulesOnly:$useLangdock
+        if ($useLangdock -and $secCheck.threat_level -ne 'danger') {
+            Write-Log "[$i/$($mails.Count)] Analysiere mit Langdock: `"$($mail.Subject)`" | $($mail.SenderName)"
+            try {
+                $prediction = Invoke-LangdockAnalysis $mail $Config
+            } catch {
+                Write-Log "  -> Langdock-Fehler: $(Get-HttpErrorDetail $_)" "ERROR"
+            }
+            if ($prediction) {
+                $secCheck = Merge-LlmPhishing $secCheck $prediction
+            } elseif ($ollamaFallback) {
+                Write-Log "  -> Weiter mit Ollama (Fallback)" "WARN"
+                $secCheck = Test-EmailSecurity $mail $Config
+            } else {
+                Write-Log "  -> Bleibt im Posteingang, neuer Versuch beim naechsten Scan" "WARN"
+                continue
+            }
+        }
+
         if ($secCheck.is_threat) {
             $reasonStr = $secCheck.reasons -join " | "
             Write-Log "[$i/$($mails.Count)] SICHERHEITSWARNUNG ($($secCheck.threat_level.ToUpper())): `"$($mail.Subject)`" | $($mail.SenderName)" "WARN"
@@ -896,47 +1148,77 @@ function Scan-Inbox {
                 $entry.target_folder    = "EmailProcessor/Sicherheitswarnung"
                 $entry.security_warning = $reasonStr
                 $entry.threat_level     = $secCheck.threat_level
+                $entry.message_id       = $messageId
                 $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Sicherheitswarnung"))
                 $entry.entry_id = $moved.EntryID
                 Add-To-Queue $entry
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> Verschoben nach: EmailProcessor/Sicherheitswarnung"
+                $extra.security_reasons = @($secCheck.reasons)
+                $extra.threat_level     = $secCheck.threat_level
+                Write-TrainingPrediction $Config $entry $trainInput $prediction $extra
             } catch { Write-Log "  -> Fehler beim Sicherheits-Handling: $_" "ERROR" }
             continue
         }
 
         # Verdächtige Spam-Emails: Ollama überspringen, direkt als Werbung einreihen
-        if (Is-SuspiciousSpam $mail) {
+        # (bei vorhandener Langdock-Analyse wird diese genutzt - die Regel ist nur ein Merkmal fuer die Trainingsdaten)
+        $isSpam = Is-SuspiciousSpam $mail
+        $extra.spam_heuristic = [bool]$isSpam
+        if ($isSpam -and -not $prediction) {
             Write-Log "[$i/$($mails.Count)] Spam-Absender erkannt: `"$($mail.Subject)`" | $($mail.SenderName)"
             try {
                 $entry = Build-QueueEntry $mail 'advertisement' '' $Config
                 $entry.proposed_action = "Archivieren (verdaechtiger Spam-Absender — kein echter Name gesetzt)"
+                $entry.message_id = $messageId
+                Set-AutoDecision $entry $null $Config
                 $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Zur Pruefung"))
                 $entry.entry_id = $moved.EntryID
                 Add-To-Queue $entry
                 $processedKeys[$dedupKey] = $true
                 Write-Log "  -> Als Werbung/Spam eingereiht (Ollama uebersprungen)"
+                Write-TrainingPrediction $Config $entry $trainInput $null $extra
             } catch { Write-Log "  -> Fehler beim Spam-Handling: $_" "ERROR" }
             continue
         }
 
-        # Ausstehende Genehmigungen VOR dem Ollama-Aufruf verarbeiten
-        # (damit genehmigte Emails nicht durch laufende Klassifizierung blockiert werden)
-        Process-Queue $Namespace $Inbox $Outlook $Config
-
-        Write-Log "[$i/$($mails.Count)] Klassifiziere: `"$($mail.Subject)`" | $($mail.SenderName)"
         try {
-            $cls   = Classify-Email $mail $Config
-            $entry = Build-QueueEntry $mail $cls.category $cls.hotel $Config
+            if (-not $prediction) {
+                Write-Log "[$i/$($mails.Count)] Klassifiziere: `"$($mail.Subject)`" | $($mail.SenderName)"
+                $cls = Classify-Email $mail $Config
+                $prediction = [ordered]@{
+                    provider = 'ollama'; model = "$($Config.ollama_model)"
+                    category = $cls.category; hotel = "$($cls.hotel)"; confidence = $cls.confidence; reason = $cls.reason
+                    language = ""
+                }
+            } elseif ($Config.training_data.compare_ollama -and $trainInput) {
+                # Optional: Ollama parallel mitlaufen lassen, um es spaeter mit Langdock vergleichen zu koennen
+                $cls = Classify-Email $mail $Config
+                $extra.ollama_prediction = [ordered]@{ model = "$($Config.ollama_model)"; category = $cls.category; hotel = "$($cls.hotel)"; confidence = $cls.confidence }
+            }
+
+            $entry = Build-QueueEntry $mail $prediction.category $prediction.hotel $Config $prediction.language
             $entry.security_status = 'clean'
+            $entry.message_id      = $messageId
+            $entry.llm_provider    = $prediction.provider
+            $entry.confidence      = $prediction.confidence
+            $entry.llm_reason      = $prediction.reason
+            Set-AutoDecision $entry $prediction $Config
 
             # Erst verschieben, dann neue EntryID speichern (EntryID aendert sich beim Verschieben)
             $moved = $mail.Move((Resolve-Folder $Inbox "EmailProcessor/Zur Pruefung"))
             $entry.entry_id = $moved.EntryID
             Add-To-Queue $entry
             $processedKeys[$dedupKey] = $true
+            Write-TrainingPrediction $Config $entry $trainInput $prediction $extra
 
-            Write-Log "  -> Wartet auf Genehmigung: $($entry.proposed_action)"
+            if ($entry.auto_approved) {
+                Write-Log "  -> Automatisch freigegeben ($($entry.auto_note)): $($entry.proposed_action)"
+            } elseif ($entry.auto_mode -eq 'shadow' -and $entry.auto_eligible) {
+                Write-Log "  -> Testbetrieb: wuerde automatisch ausgefuehrt - wartet auf Genehmigung: $($entry.proposed_action)"
+            } else {
+                Write-Log "  -> Wartet auf Genehmigung: $($entry.proposed_action)$(if ($entry.auto_note) { " (manuell: $($entry.auto_note))" })"
+            }
         } catch {
             Write-Log "  -> Fehler: $_" "ERROR"
         }
@@ -962,7 +1244,14 @@ $config          = Load-Config
 $lastScan        = [DateTime]::MinValue
 $scanIntervalSec = $config.check_interval_minutes * 60
 
-Write-Log "Modell: $($config.ollama_model) | Scanintervall: $($config.check_interval_minutes) Min. | Queue-Check: alle 10 Sek."
+if ((Get-LlmProvider $config) -eq 'langdock') {
+    $keyInfo = if (Get-LangdockApiKey $config) { "API-Key gefunden" } else { "KEIN API-Key ($(Get-LangdockKeyName $config))" }
+    Write-Log "KI: Langdock ($(Get-LangdockModelLabel $config)) | $keyInfo | Ollama-Fallback: $(if ($config.langdock.fallback_to_ollama -eq $false) { 'aus' } else { $config.ollama_model })"
+} else {
+    Write-Log "KI: Ollama ($($config.ollama_model))"
+}
+Write-Log "Auto-Freigabe: $(Get-AutoApproveMode $config) | Trainingsdaten: $(if (Test-TrainingEnabled $config) { 'an' } else { 'aus' })"
+Write-Log "Scanintervall: $($config.check_interval_minutes) Min. | Queue-Check: alle 10 Sek."
 
 while ($true) {
     try {

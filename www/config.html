@@ -167,6 +167,86 @@
     </div>
   </div>
 
+  <!-- KI & Auto-Freigabe -->
+  <div class="card p-4 mb-4">
+    <p class="section-label mb-1"><i class="bi bi-robot me-1"></i>KI & Auto-Freigabe</p>
+    <h5 class="fw-semibold mb-4">Langdock, automatische Freigabe und Trainingsdaten</h5>
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label class="form-label fw-semibold">KI-Anbieter</label>
+        <select class="form-select" id="llm-provider">
+          <option value="langdock">Langdock</option>
+          <option value="ollama">Ollama (lokal)</option>
+        </select>
+        <div class="form-text" id="key-status">API-Key wird aus der Umgebungsvariable gelesen.</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label fw-semibold">Langdock-Modell</label>
+        <input type="text" class="form-control" id="ld-model" placeholder="gpt-5-mini">
+        <div class="form-text">Verfügbare Modelle zeigt <code>test_langdock.ps1</code>.</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label fw-semibold">Langdock-Agent-ID <span class="fw-normal text-muted">(optional)</span></label>
+        <input type="text" class="form-control" id="ld-agent" placeholder="leer = Modell direkt nutzen">
+        <div class="form-text">Wenn gesetzt, wird statt des Modells dieser Agent verwendet.</div>
+      </div>
+      <div class="col-12">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="ld-fallback">
+          <label class="form-check-label" for="ld-fallback">Wenn Langdock nicht erreichbar ist, mit Ollama weitermachen</label>
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <label class="form-label fw-semibold">Auto-Freigabe</label>
+        <select class="form-select" id="auto-mode">
+          <option value="off">Aus – alles manuell genehmigen</option>
+          <option value="shadow">Testbetrieb – nur markieren</option>
+          <option value="on">An – sichere Fälle automatisch ausführen</option>
+        </select>
+        <div class="form-text">Erst im Testbetrieb prüfen, wie oft die KI richtig liegt.</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Mindest-Sicherheit</label>
+        <select class="form-select" id="auto-conf">
+          <option value="high">hoch</option>
+          <option value="medium">mittel</option>
+        </select>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label fw-semibold">Automatisch erlaubt für</label>
+        <div class="d-flex flex-wrap gap-3 pt-1">
+          <div class="form-check"><input class="form-check-input auto-cat" type="checkbox" value="advertisement" id="ac-ad"><label class="form-check-label" for="ac-ad">Werbung</label></div>
+          <div class="form-check"><input class="form-check-input auto-cat" type="checkbox" value="newsletter" id="ac-nl"><label class="form-check-label" for="ac-nl">Newsletter</label></div>
+          <div class="form-check"><input class="form-check-input auto-cat" type="checkbox" value="application" id="ac-ap"><label class="form-check-label" for="ac-ap">Bewerbung</label></div>
+          <div class="form-check"><input class="form-check-input auto-cat" type="checkbox" value="booking" id="ac-bk"><label class="form-check-label" for="ac-bk">Buchung</label></div>
+        </div>
+        <div class="form-text">Immer manuell: Geschäftspost, Sicherheitswarnungen, Unbekannt, Rückfragen an Gäste, Newsletter ohne One-Click-Abmeldung.</div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="td-enabled">
+          <label class="form-check-label fw-semibold" for="td-enabled">Trainingsdaten sammeln</label>
+        </div>
+        <div class="form-text">Speichert Mailtext, KI-Vorschlag und deine Entscheidung in <code>training_data/</code> – enthält personenbezogene Daten.</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Gespeicherte Textlänge</label>
+        <div class="input-group">
+          <input type="number" class="form-control" id="td-chars" min="500" max="20000" step="500" value="4000">
+          <span class="input-group-text">Zeichen</span>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="form-check mt-md-4">
+          <input class="form-check-input" type="checkbox" id="td-compare">
+          <label class="form-check-label" for="td-compare">Ollama zum Vergleich mitlaufen lassen</label>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="d-flex justify-content-end gap-2">
     <a href="/" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Abbrechen</a>
     <button class="btn btn-primary px-4" onclick="save()">
@@ -249,19 +329,40 @@ function save() {
       .map(s => s.trim().toLowerCase()).filter(Boolean);
   }
 
-  const data = {
+  // Auf der geladenen Config aufbauen, damit Einstellungen ohne Eingabefeld
+  // (z.B. ollama_url, scan_max_age_days, test_mode, langdock.region) erhalten bleiben
+  const data = Object.assign({}, loadedCfg, {
     hotels,
     applications_email:    document.getElementById('app-email').value.trim(),
     ollama_model:          document.getElementById('ollama-model').value.trim() || 'llama3.2',
     check_interval_minutes: parseInt(document.getElementById('interval').value) || 5,
     skip_domains:  parseLines('skip-domains'),
     skip_senders:  parseLines('skip-senders'),
-    reply_templates: {
+    reply_templates: Object.assign({}, loadedCfg.reply_templates, {
       de: document.getElementById('tpl-text-de').value,
       en: document.getElementById('tpl-text-en').value,
       es: document.getElementById('tpl-text-es').value
-    }
-  };
+    }),
+    llm_provider: document.getElementById('llm-provider').value,
+    langdock: Object.assign({}, loadedCfg.langdock, {
+      model:    document.getElementById('ld-model').value.trim(),
+      agent_id: document.getElementById('ld-agent').value.trim(),
+      fallback_to_ollama: document.getElementById('ld-fallback').checked
+    }),
+    auto_approve: Object.assign({}, loadedCfg.auto_approve, {
+      mode:           document.getElementById('auto-mode').value,
+      min_confidence: document.getElementById('auto-conf').value,
+      categories:     Array.from(document.querySelectorAll('.auto-cat:checked')).map(c => c.value)
+    }),
+    training_data: Object.assign({}, loadedCfg.training_data, {
+      enabled:        document.getElementById('td-enabled').checked,
+      body_chars:     parseInt(document.getElementById('td-chars').value) || 4000,
+      compare_ollama: document.getElementById('td-compare').checked
+    })
+  });
+  if (data.llm_provider === 'langdock' && !data.langdock.model && !data.langdock.agent_id) {
+    toast('Für Langdock bitte ein Modell oder eine Agent-ID eintragen.', 'danger'); return;
+  }
 
   fetch('/api/config', {
     method: 'POST',
@@ -283,8 +384,24 @@ function save() {
 }
 
 // Konfiguration laden
+let loadedCfg = {};
 fetch('/api/config').then(r=>r.json()).then(cfg => {
+  loadedCfg = cfg || {};
   document.getElementById('app-email').value    = cfg.applications_email || '';
+
+  // KI & Auto-Freigabe
+  const ld = cfg.langdock || {}, aa = cfg.auto_approve || {}, td = cfg.training_data || {};
+  document.getElementById('llm-provider').value = cfg.llm_provider === 'langdock' ? 'langdock' : 'ollama';
+  document.getElementById('ld-model').value     = ld.model || '';
+  document.getElementById('ld-agent').value     = ld.agent_id || '';
+  document.getElementById('ld-fallback').checked = ld.fallback_to_ollama !== false;
+  document.getElementById('auto-mode').value    = ['shadow','on'].includes(aa.mode) ? aa.mode : 'off';
+  document.getElementById('auto-conf').value    = aa.min_confidence === 'medium' ? 'medium' : 'high';
+  const cats = aa.categories || ['advertisement','newsletter','application','booking'];
+  document.querySelectorAll('.auto-cat').forEach(c => { c.checked = cats.includes(c.value); });
+  document.getElementById('td-enabled').checked = td.enabled === true;
+  document.getElementById('td-chars').value     = td.body_chars || 4000;
+  document.getElementById('td-compare').checked = td.compare_ollama === true;
   document.getElementById('ollama-model').value = cfg.ollama_model || 'llama3.2';
   document.getElementById('interval').value     = cfg.check_interval_minutes || 5;
 
@@ -306,6 +423,15 @@ fetch('/api/config').then(r=>r.json()).then(cfg => {
   document.getElementById('tpl-text-en').value = t.en || '';
   document.getElementById('tpl-text-es').value = t.es || '';
 }).catch(() => toast('Config konnte nicht geladen werden.', 'warning'));
+
+// Zeigen, ob der Langdock-API-Key gesetzt ist (der Key selbst wird nie angezeigt)
+fetch('/api/stats').then(r=>r.json()).then(d => {
+  const el = document.getElementById('key-status');
+  const name = d.langdock_key_name || 'LANGDOCK_API_KEY';
+  el.innerHTML = d.langdock_key_set
+    ? '<span class="text-success"><i class="bi bi-check-circle-fill me-1"></i>API-Key gefunden</span> (Umgebungsvariable <code>' + esc(name) + '</code>)'
+    : '<span class="text-danger"><i class="bi bi-x-circle-fill me-1"></i>Kein API-Key</span> – Umgebungsvariable <code>' + esc(name) + '</code> setzen (siehe ANLEITUNG_LANGDOCK.txt)';
+}).catch(() => {});
 </script>
 </body>
 </html>

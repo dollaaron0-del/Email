@@ -1,0 +1,131 @@
+============================================================
+  EMAIL-BOT MIT LANGDOCK – EINRICHTUNG
+============================================================
+
+WAS IST NEU
+-----------
+- Langdock statt Ollama: EINE Abfrage pro Mail liefert Kategorie,
+  Hotel, Sicherheit (hoch/mittel/niedrig), Sprache und
+  Phishing-Einschätzung. Ollama bleibt als Rückfallebene, falls
+  Langdock nicht erreichbar ist.
+- Auto-Freigabe in drei Stufen: Aus / Testbetrieb / An.
+- Trainingsdaten: Mailtext, KI-Vorschlag und deine Entscheidung
+  werden gesammelt, damit später auf einem Firmenserver ein eigenes
+  Modell angelernt werden kann.
+
+
+VORHER KLÄREN
+-------------
+- Datenschutz: Mit Langdock gehen Mailinhalte (Gäste, Bewerber) an
+  einen Cloud-Dienst. Die Trainingsdaten speichern Mailtexte über
+  Monate. Beides vorher mit IT/Datenschutz abstimmen.
+- API-Zugang: Ein Langdock-Admin muss die API freischalten und einen
+  API-Key ausstellen (Completion-API; nur wenn ein Agent genutzt
+  wird: Agent-API und den Agent mit dem Key teilen).
+- Kosten: Die API wird pro Token abgerechnet, getrennt von den
+  Nutzer-Plätzen. Ausgabenlimit für den Workspace setzen.
+
+
+SCHRITT 1: API-KEY HINTERLEGEN (nicht in config.json!)
+------------------------------------------------------
+PowerShell öffnen und eingeben (DEIN-KEY ersetzen):
+
+  [Environment]::SetEnvironmentVariable("LANGDOCK_API_KEY", "DEIN-KEY", "User")
+
+Der Bot findet den Key auch ohne Neustart.
+
+
+SCHRITT 2: VERBINDUNG TESTEN
+----------------------------
+Im Programmordner:
+
+  powershell -ExecutionPolicy Bypass -File test_langdock.ps1
+
+Zeigt die verfügbaren Modelle und schickt eine erfundene
+Buchungsanfrage zur Probe an Langdock. Es wird keine echte Mail
+gelesen oder verschickt.
+
+
+SCHRITT 3: EINSTELLUNGEN
+------------------------
+Dashboard -> Einstellungen -> "KI & Auto-Freigabe":
+
+  KI-Anbieter:            Langdock
+  Langdock-Modell:        ein Name aus test_langdock.ps1
+  Auto-Freigabe:          Testbetrieb
+  Trainingsdaten sammeln: an
+
+Nur in config.json (Abschnitt "langdock") einstellbar:
+  region            Standard "eu"
+  base_url          nur bei eigener Langdock-Instanz:
+                    https://<eure-domain>/api/public
+  body_chars        wie viel Mailtext an Langdock geht (Standard 3000)
+  timeout_sec       Standard 90
+  temperature       nur setzen, wenn das Modell es unterstützt
+  reasoning_effort  z. B. "low" (schneller und günstiger)
+  api_key_env       Name der Umgebungsvariable (Standard LANGDOCK_API_KEY)
+
+
+AUTO-FREIGABE
+-------------
+Aus:          alles wie bisher, jede Mail muss genehmigt werden.
+Testbetrieb:  Der Bot markiert im Dashboard "Würde automatisch
+              ausgeführt". Du genehmigst weiter alles selbst.
+              Genehmigen = KI lag richtig.
+              Ablehnen/Korrigieren/Ignorieren = KI lag falsch.
+An:           markierte Fälle werden sofort ausgeführt.
+
+Automatisch ausgeführt wird nur, wenn ALLES zutrifft:
+- das Ergebnis kommt von Langdock (nicht von Ollama)
+- der Test-Modus im Dashboard ist aus
+- die Kategorie ist freigeschaltet (Werbung, Newsletter,
+  Bewerbung, Buchung)
+- die Sicherheit ist mindestens so hoch wie eingestellt
+  (Standard: hoch)
+- die Sicherheitsprüfung ist bestanden
+- Buchung: Hotel eindeutig erkannt -> Weiterleitung ans Hotel
+- Newsletter: One-Click-Abmeldung vorhanden
+- der Eintrag wurde nicht korrigiert
+
+Immer manuell: Geschäftspost, Sicherheitswarnungen, Unbekannt,
+Rückfragen an Gäste, Kollegen-Mails.
+
+Empfehlung: 2-4 Wochen Testbetrieb, dann export_training_data.ps1
+ausführen. Die Zeile "Auto-Freigabe (Test)" zeigt, wie oft die
+automatische Ausführung richtig gewesen wäre. Erst bei einer sehr
+hohen Quote auf "An" stellen.
+
+
+TRAININGSDATEN
+--------------
+Gespeichert in training_data\emails_JJJJ-MM.jsonl, eine Zeile pro
+Ereignis ("prediction" = KI-Vorschlag, "decision" = was danach
+passiert ist).
+
+- Enthält Mailtexte = personenbezogene Daten.
+- Der Ordner steht in .gitignore und darf nie hochgeladen werden.
+- Speicherort und Löschfrist mit dem Datenschutz abstimmen. Mit
+  "training_data": { "dir": "..." } in config.json kann der Ordner
+  z. B. auf einem Firmenlaufwerk liegen.
+
+Zusammenführen und auswerten:
+
+  powershell -ExecutionPolicy Bypass -File export_training_data.ps1
+
+Ergebnis: training_data\export_DATUM.jsonl, ein Datensatz pro Mail:
+  input          Betreff, Absender-Domain, Mailtext, Anhänge,
+                 Abmelde-Header, Message-ID
+  label          richtige Kategorie, hotel = richtiges Hotel
+  label_quality  gold   = von dir bestätigt oder korrigiert
+                 silver = automatisch ausgeführt (ohne Prüfung)
+  prediction     was Langdock bzw. Ollama vorgeschlagen hat
+
+Die Message-ID ist dieselbe Kennung, die auch Microsoft Graph nutzt.
+Damit passen die Daten auch, wenn der Bot später auf einem Server
+ohne Outlook läuft.
+
+Ollama-Vergleich: "Ollama zum Vergleich mitlaufen lassen" anhaken.
+Dann zeigt der Export zusätzlich, wie oft das lokale Modell richtig
+lag. Das kostet Rechenzeit auf dem PC.
+
+============================================================

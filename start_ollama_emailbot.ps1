@@ -1,4 +1,4 @@
-# Startet eine eigene Ollama-Instanz auf Port 11435 fuer den Email-Bot
+﻿# Startet eine eigene Ollama-Instanz auf Port 11435 fuer den Email-Bot
 # Andere Programme nutzen weiterhin Port 11434 (Standard)
 
 $model = "llama3.2"

@@ -278,7 +278,7 @@ function renderRecent(recent) {
     <tr>
       <td class="text-muted small">${esc(e.time)}</td>
       <td class="small text-truncate" style="max-width:200px" title="${esc(e.subject)}">${esc(e.subject)}</td>
-      <td>${badge(e.category)}${e.corrected ? ' <span class="badge bg-warning text-dark ms-1" title="Manuell korrigiert">korrigiert</span>' : ''}</td>
+      <td>${badge(e.category)}${e.corrected ? ' <span class="badge bg-warning text-dark ms-1" title="Manuell korrigiert">korrigiert</span>' : ''}${e.auto ? ' <span class="badge bg-info text-dark ms-1" title="Ohne manuelle Prüfung ausgeführt">automatisch</span>' : ''}</td>
       <td class="small text-muted">${esc((e.folder||'').replace('EmailProcessor/',''))}</td>
     </tr>`).join('');
 }
@@ -339,16 +339,14 @@ function refresh() {
     if (d.bot_running) {
       banner.className = 'alert alert-success d-flex align-items-center py-2 mb-4';
       dot.className    = 'status-dot bg-success pulse me-2';
-      txt.innerHTML    = 'Bot läuft — prüft E-Mails automatisch'
-        + (d.ollama_ok ? ' &nbsp;<span class="badge bg-success" title="Eigene Ollama-Instanz aktiv">Ollama ✓</span>'
-                       : ' &nbsp;<span class="badge bg-warning text-dark" title="Ollama nicht erreichbar — Bot kann nicht klassifizieren">Ollama ✗</span>');
+      txt.innerHTML    = 'Bot läuft — prüft E-Mails automatisch' + aiBadges(d);
       btn.className    = 'btn btn-sm fw-semibold btn-outline-danger';
       btn.innerHTML    = '<i class="bi bi-stop-fill me-1"></i>Bot stoppen';
       btn.disabled     = false;
     } else {
       banner.className = 'alert alert-warning d-flex align-items-center py-2 mb-4';
       dot.className    = 'status-dot bg-warning me-2';
-      txt.textContent  = 'Bot nicht aktiv';
+      txt.innerHTML    = 'Bot nicht aktiv' + aiBadges(d);
       btn.className    = 'btn btn-sm fw-semibold btn-warning';
       btn.innerHTML    = '<i class="bi bi-play-fill me-1"></i>Bot starten';
       btn.disabled     = false;
@@ -361,15 +359,36 @@ function refresh() {
   loadCorrections();
 }
 
+function aiBadges(d) {
+  let html = '';
+  if (d.llm_provider === 'langdock') {
+    html += d.langdock_key_set
+      ? ' &nbsp;<span class="badge bg-success" title="Klassifizierung über Langdock">Langdock ✓</span>'
+      : ' &nbsp;<span class="badge bg-danger" title="Umgebungsvariable ' + esc(d.langdock_key_name || 'LANGDOCK_API_KEY') + ' ist nicht gesetzt">Langdock: kein API-Key</span>';
+    if (d.ollama_ok) html += ' <span class="badge bg-light text-dark border" title="Ollama springt ein, wenn Langdock nicht erreichbar ist">Ollama-Fallback ✓</span>';
+  } else {
+    html += d.ollama_ok ? ' &nbsp;<span class="badge bg-success" title="Eigene Ollama-Instanz aktiv">Ollama ✓</span>'
+                        : ' &nbsp;<span class="badge bg-warning text-dark" title="Ollama nicht erreichbar — Bot kann nicht klassifizieren">Ollama ✗</span>';
+  }
+  if (d.auto_mode === 'on')
+    html += ' <span class="badge bg-info text-dark" title="Sichere Fälle werden ohne Genehmigung ausgeführt"><i class="bi bi-lightning-charge-fill me-1"></i>Auto-Freigabe AN</span>';
+  else if (d.auto_mode === 'shadow')
+    html += ' <span class="badge bg-light text-dark border" title="Testbetrieb: Der Bot markiert nur, was er automatisch ausführen würde — du genehmigst weiterhin alles selbst"><i class="bi bi-eye me-1"></i>Auto-Freigabe: Testbetrieb</span>';
+  if (d.training_enabled)
+    html += ' <span class="badge bg-light text-dark border" title="Mails und Entscheidungen werden für späteres Training gespeichert (training_data/)"><i class="bi bi-database me-1"></i>Trainingsdaten</span>';
+  return html;
+}
+
 function updateTestMode(active) {
   const banner = document.getElementById('test-banner');
   const btn    = document.getElementById('testmode-btn');
+  // 'important' noetig: die Klasse d-flex setzt display:flex!important und wuerde ein normales 'none' ueberstimmen
   if (active) {
-    banner.style.display = '';
+    banner.style.setProperty('display', 'flex', 'important');
     btn.className = 'btn btn-sm btn-warning fw-semibold';
     btn.innerHTML = '<i class="bi bi-flask-fill me-1"></i>Test-Modus AN';
   } else {
-    banner.style.display = 'none';
+    banner.style.setProperty('display', 'none', 'important');
     btn.className = 'btn btn-sm btn-outline-secondary fw-semibold';
     btn.innerHTML = '<i class="bi bi-flask me-1"></i>Test-Modus';
   }
@@ -421,7 +440,7 @@ function renderQueue(items) {
             <div class="small text-muted"><i class="bi bi-person me-1"></i>${esc(e.sender_name||e.sender)}</div>
           </div>
           <div class="text-success small fw-semibold text-end flex-shrink-0">
-            <i class="bi bi-check-circle-fill me-1"></i>Genehmigt<br>
+            ${e.auto_approved ? '<i class="bi bi-lightning-charge-fill me-1"></i>Automatisch freigegeben' : '<i class="bi bi-check-circle-fill me-1"></i>Genehmigt'}<br>
             <span class="fw-normal text-muted" style="font-size:.75rem">Bot führt Aktion aus…</span>
           </div>
         </div>
@@ -518,6 +537,20 @@ function renderQueue(items) {
     const securityBadge = e.security_status === 'clean'
       ? '<span class="badge bg-success ms-2" title="Sicherheitsprüfung bestanden — kein Phishing/Schadsoftware erkannt"><i class="bi bi-shield-check me-1"></i>Sicher</span>'
       : '';
+    // KI-Einschätzung + Auto-Freigabe (Testbetrieb: nur Hinweis, genehmigen musst du trotzdem)
+    const CONF_LABEL = { high: 'hoch', medium: 'mittel', low: 'niedrig' };
+    const aiLine = e.llm_provider ? `
+      <div class="small text-muted mt-1" style="font-size:.78rem">
+        <i class="bi bi-robot me-1"></i>${e.llm_provider === 'langdock' ? 'Langdock' : 'Ollama'}
+        · Sicherheit: <strong>${esc(CONF_LABEL[e.confidence] || e.confidence || '–')}</strong>
+        ${e.llm_reason ? ' · ' + esc(e.llm_reason) : ''}
+      </div>` : '';
+    const autoLine = e.auto_mode === 'shadow' && e.auto_eligible ? `
+      <div class="mt-1"><span class="badge bg-info-subtle text-info-emphasis border border-info-subtle" style="font-size:.75rem"
+        title="Bei eingeschalteter Auto-Freigabe würde diese Aktion ohne Genehmigung ausgeführt. Genehmigen = Bot lag richtig, Ablehnen/Korrigieren = Bot lag falsch.">
+        <i class="bi bi-lightning-charge me-1"></i>Würde automatisch ausgeführt</span></div>`
+      : (e.auto_mode && e.auto_mode !== 'off' && e.auto_note) ? `
+      <div class="small text-muted mt-1" style="font-size:.75rem"><i class="bi bi-person-check me-1"></i>Manuelle Prüfung: ${esc(e.auto_note)}</div>` : '';
     const cardStyle = e.category === 'security_threat'
       ? 'border border-2 border-danger bg-danger bg-opacity-10'
       : e.category === 'sonstiges'
@@ -545,6 +578,7 @@ function renderQueue(items) {
               ) : ''
             }
           </div>
+          ${aiLine}${autoLine}
           ${replySection}
           ${bodySection}
         </div>

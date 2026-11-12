@@ -88,14 +88,27 @@ while ($true) {
                 # Config lesen (test_mode + ollama_url)
                 $cfgF = Join-Path $scriptDir "config.json"
                 $testMode = $false; $ollamaUrl = "http://localhost:11434/api/tags"
+                $provider = "ollama"; $autoMode = "off"; $keyName = "LANGDOCK_API_KEY"; $training = $false
                 if (Test-Path $cfgF) {
                     try {
                         $cfg = Get-Content $cfgF -Raw -Encoding UTF8 | ConvertFrom-Json
                         $testMode = [bool]$cfg.test_mode
                         if ($cfg.ollama_url) { $ollamaUrl = $cfg.ollama_url -replace '/api/chat','/api/tags' }
+                        if ("$($cfg.llm_provider)".ToLower() -eq 'langdock') { $provider = "langdock" }
+                        if ("$($cfg.auto_approve.mode)".ToLower() -in @('shadow','on')) { $autoMode = "$($cfg.auto_approve.mode)".ToLower() }
+                        if ($cfg.langdock.api_key_env) { $keyName = "$($cfg.langdock.api_key_env)" }
+                        $training = ($cfg.training_data.enabled -eq $true)
                     } catch {}
                 }
+                # Nur pruefen OB ein Key existiert - der Key selbst wird nie ausgeliefert
+                $keySet = $false
+                foreach ($scope in @('Process','User','Machine')) { if ([Environment]::GetEnvironmentVariable($keyName, $scope)) { $keySet = $true; break } }
                 $data | Add-Member -NotePropertyName test_mode -NotePropertyValue $testMode -Force
+                $data | Add-Member -NotePropertyName llm_provider -NotePropertyValue $provider -Force
+                $data | Add-Member -NotePropertyName auto_mode -NotePropertyValue $autoMode -Force
+                $data | Add-Member -NotePropertyName langdock_key_set -NotePropertyValue $keySet -Force
+                $data | Add-Member -NotePropertyName langdock_key_name -NotePropertyValue $keyName -Force
+                $data | Add-Member -NotePropertyName training_enabled -NotePropertyValue $training -Force
                 # Ollama-Erreichbarkeit pruefen
                 $ollamaOk = $false
                 try { Invoke-RestMethod -Uri $ollamaUrl -TimeoutSec 2 -ErrorAction Stop | Out-Null; $ollamaOk = $true } catch {}
