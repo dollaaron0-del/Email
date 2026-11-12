@@ -1,0 +1,105 @@
+============================================================
+  EMAIL-BOT (PYTHON-VERSION) – EINRICHTUNG
+============================================================
+
+WAS IST ANDERS ALS BEI DER POWERSHELL-VERSION
+---------------------------------------------
+- Bot und Dashboard laufen in EINEM Programm (python -m emailbot).
+  Watchdog und zwei offene PowerShell-Fenster sind nicht mehr nötig.
+- Bot und Dashboard teilen sich die Warteschlange sauber. Genehmigungen
+  gehen nicht mehr verloren, wenn der Bot gerade schreibt.
+- "Bot starten/stoppen" im Dashboard hält den Bot nur an oder setzt
+  ihn fort. Das Dashboard bleibt erreichbar.
+- Dieselben Dateien wie bisher: config.json, queue.json, stats.json,
+  corrections.json, training_data\, email_processor.log und die
+  Oberfläche in www\. Du kannst also jederzeit zur PowerShell-Version
+  zurück. Nur NICHT beide gleichzeitig laufen lassen.
+- Der Mailzugriff steckt in einem eigenen Modul (emailbot\mail\).
+  Heute: Outlook auf diesem PC. Für einen Server ohne Outlook ist
+  Microsoft Graph vorbereitet (emailbot\mail\graph.py beschreibt,
+  was die IT dafür einrichten muss).
+
+
+SCHRITT 1: PYTHON INSTALLIEREN
+------------------------------
+Python 3.9 oder neuer von https://www.python.org/downloads/
+Bei der Installation "Add Python to PATH" anhaken.
+
+
+SCHRITT 2: PAKETE INSTALLIEREN
+------------------------------
+Im Programmordner eine Eingabeaufforderung öffnen und eingeben:
+
+  py -3 -m venv .venv
+  .venv\Scripts\python -m pip install -r requirements.txt
+
+Installiert werden nur: flask (Dashboard), requests (Langdock/Ollama),
+pywin32 (Outlook).
+
+
+SCHRITT 3: VON DER POWERSHELL-VERSION UMSTEIGEN
+-----------------------------------------------
+1. PowerShell-Bot, Dashboard und Watchdog beenden:
+   - die Fenster "Email Bot" und "Dashboard Server" schließen
+   - im Task-Manager laufende powershell.exe mit watchdog.ps1 beenden
+   - einen Autostart-Eintrag für launch_watchdog.vbs bzw. start_all.bat
+     entfernen
+2. config.json bleibt wie sie ist. Optional ergänzen:
+     "mail_backend": "outlook",
+     "dashboard_port": 5000
+
+
+SCHRITT 4: STARTEN
+------------------
+Doppelklick auf start_python.bat
+-> startet Bot + Dashboard, öffnet http://localhost:5000 und startet
+   nach einem Absturz automatisch neu.
+
+Andere Startarten (im Programmordner):
+  .venv\Scripts\python -m emailbot                 Bot + Dashboard
+  .venv\Scripts\python -m emailbot --paused        Dashboard sofort, Bot erst per Knopf
+  .venv\Scripts\python -m emailbot --no-dashboard  nur der Bot
+
+Autostart: Windows-Taste -> "Aufgabenplanung" -> "Einfache Aufgabe
+erstellen" -> Trigger "Beim Anmelden" -> Programm: start_python.bat
+Outlook muss dabei geöffnet und angemeldet sein.
+
+
+WERKZEUGE
+---------
+Langdock-Verbindung testen (schickt nur eine erfundene Beispielmail):
+  .venv\Scripts\python -m emailbot.test_langdock
+
+Trainingsdaten zusammenführen und auswerten:
+  .venv\Scripts\python -m emailbot.export_training
+
+Die Python-Werkzeuge ersetzen test_langdock.ps1 und
+export_training_data.ps1 und liefern dieselben Ergebnisse. Alles zu
+Langdock, Auto-Freigabe und Trainingsdaten steht in
+ANLEITUNG_LANGDOCK.txt.
+
+
+FÜR ENTWICKLER: TESTS
+---------------------
+  .venv\Scripts\python -m pip install -r requirements-dev.txt
+  .venv\Scripts\python -m pytest
+
+Die Tests verwenden ein Postfach im Speicher und einen lokalen
+Testserver statt Outlook, Langdock und Ollama. Es werden keine echten
+Mails gelesen oder verschickt.
+
+
+HÄUFIGE PROBLEME
+----------------
+"Port 5000 ist belegt"
+  -> Läuft die PowerShell-Version (dashboard_server.ps1) oder ein
+     zweiter Python-Bot? Beenden und neu starten.
+
+"Mailzugriff nicht moeglich"
+  -> Outlook öffnen und anmelden. Der Bot versucht es alle 30 Sek.
+     erneut.
+
+"Kein Langdock-API-Key"
+  -> Siehe ANLEITUNG_LANGDOCK.txt, Schritt 1.
+
+============================================================
